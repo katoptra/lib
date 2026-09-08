@@ -1,336 +1,550 @@
-# Migrating a mirror onto the toolbox
+# One shot: the rsync engine into lib, then ctan, tlnet and dropbox onto it
 
-How ctan, tlnet and dropbox move from their own copies of the toolbox to
-`katoptra/lib`. One agent per mirror, in parallel, each in its own repository. Nothing
-here touches lib, dispatch, healthchecks, terraform or the buckets.
+One agent, one sitting, five phases with a gate after each. At the end: `katoptra/lib`
+carries the toolbox and the rsync engine and is released as `v1.0.0`; ctan and tlnet are
+consumers of both; dropbox is a consumer of the toolbox; every mirror repository is a
+Taskfile, a `.taskrc.yml`, a `render.txt`, two ten-line workflows, docs and its own
+files; and every reference in the org points at the new shape. This file is deleted in
+the last commit, because the repositories describe the current system and the commit
+messages carry the story.
 
-**These mirrors are production.** Real users install TeX from ctan and tlnet every hour
-and dropbox is the only copy of a Dropbox account. The migration must not cause a
-missed run, a failed run, a changed upload, a changed deletion, or a changed schedule.
-The tools for that are in section 5: prove the new pipeline renders the same commands
-as the old one before it runs, run it against scratch where scratch exists, and merge
-in the window right after a green run.
+**These mirrors are production.** People install TeX from ctan and tlnet every hour;
+dropbox is the only copy of a Dropbox account. The owner accepts a temporary break in
+exchange for doing this in one pass, and will fix fast. That does not lower the bar. It
+means: prove every step offline before it touches a bucket, merge right after a green
+run, start the next run by hand and watch it, and know the rollback before merging.
 
-## 0. Before any agent starts, once, by hand
+Read `README.md` first, then this whole file, then start. Phase order matters. Within
+a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
+re-run the gate; never skip one.
 
-These are lib-side and shared. An agent that finds one undone stops and reports.
+## The end state, so every decision below has a reference
 
-- [ ] `katoptra/lib` is tagged `v1.0.0` and the `release` workflow is green. `v1` exists
-      as a git tag and `katoptra/lib/.github/workflows/sync.yml@v1` resolves.
-- [ ] `ghcr.io/katoptra/toolbox:rsync-v1` and `proton-v1` pull anonymously:
-      `docker manifest inspect ghcr.io/katoptra/toolbox:rsync-v1` from a logged-out
-      shell. If it asks for credentials the package is private: make it public in the
-      package settings (github.com/orgs/katoptra/packages).
-- [ ] The org Actions policy allows reusable workflows from the org and leaves the
-      default token read-only. The caller grants `actions: write` itself (section 2).
-- [ ] The ctan branch ruleset's required status check is renamed from `check` to
-      `check / check`. A reusable workflow's check reports as `<caller job> / <called
-      job>`, and a required check that never reports blocks every pull request. Run
-      `gh api repos/katoptra/<repo>/rules/branches/<default>` for the other two; only
-      ctan has a rule today.
-- [ ] Each agent has `gh` authenticated with `repo` and `workflow` scope, task 3.51 or
-      newer on the host, Docker or Apple container running, and for a live test the
-      mirror's credentials exported in the shell.
+```
+katoptra/lib                            katoptra/ctan                 katoptra/tlnet               katoptra/dropbox
+  toolbox.yml                             Taskfile.yml (~150 lines)     Taskfile.yml (~60 lines)     Taskfile.yml (~90 lines)
+  engines/rsync.yml                       .taskrc.yml                   .taskrc.yml                  .taskrc.yml
+  docker/rsync.Dockerfile                 render.txt                    render.txt                   render.txt
+  docker/proton.Dockerfile                aws.config                    aws.config                   op.env
+  toolchain.lock.toml                     fixtures/  (ctan's own)       site/index.html              config/mirror.toml
+  examples/rsync/   (toolbox + engine)    docs/, README, CLAUDE, ...    README, CLAUDE, ...          src/, tests/, pyproject
+  examples/proton/  (toolbox)             .github/workflows/{sync,check}.yml, ten lines each, in all three
+  .github/{actions,workflows}
+```
 
-## 1. What the toolbox owns and what the mirror keeps
+Three layers, flattened into one namespace in a mirror:
 
-Read `README.md` first. The rule: a verb or file that does the same thing in every
-mirror is the library's; a mirror keeps only what is specific to what it mirrors.
+| Layer | Owns | Hooks it offers (no-op unless a lower layer replaces them) |
+|---|---|---|
+| toolbox (`toolbox.yml`) | menu, image, run, op, sync, plan, render, check, clean, clock, ping, ping-fail, report | `report-engine`, `report-mirror` |
+| engine (`engines/rsync.yml`) | list, normalise, state, rebuild, diff, split, batches, batch, fetch, publish, merge, checkpoint, remove, delete, reconcile, retry, report-engine | `prepare`, `verify`, `index`, `smoke` |
+| mirror | root vars, pipeline, plan-pipeline, its overrides of the hooks | none |
 
-| Leaves the mirror, comes from lib | Stays in the mirror |
-|---|---|
-| `docker/` and the image build; the `IMAGE`, `ENGINE`, `RUNNER`, `PASS_ENV` vars | Root vars: `SOURCE`, `BUCKET`, `HOST`, and every tunable it owns |
-| `image`, `image-clean`, `run`, `op`, `clean`, `sync`, `plan`, `render`, `check` verbs | `pipeline` and `plan-pipeline`, the ordered step lists |
-| The hand-drawn menu (`default`); extra lines go in the `MENU` var | Every engine verb, until the rsync engine is extracted in a later release |
-| `ping`, `ping-fail`, `clock` (a mirror may keep its own, excluded) | Verbs with mirror-specific meaning: `verify`, `index`, `page`, `smoke`, `tlpdb` |
-| The workflow body; installer scripts; the toolchain lock | The caller workflows, ten lines each; `op.env`; `render.txt`; fixtures |
+A mirror replaces a hook by listing it under `excludes:` on the include that defines it
+and defining its own. Every other verb is the library's, and a mirror never redefines
+one: a duplicate without `excludes` is a parse error, on purpose.
 
-The engine is not extracted in this migration. ctan's `list`, `diff`, `batches` and the
-rest stay in ctan's Taskfile. That is a later lib release with its own plan.
+## Phase A: lib
 
-## 2. The changes, per mirror
+Branch `main`, push directly; lib has no branch rule. Every step ends with
+`cd examples/rsync && task image-build && task check` and the same in `examples/proton`
+staying green (the images already exist locally as `*-dev`).
 
-### 2.1 Every mirror
+### A.1 Toolbox: the chain file and the layered report
 
-1. **`.taskrc.yml`** at the root:
+In `toolbox.yml`:
+
+1. `clock` also clears the chain file, so a run that works no batches never re-queues
+   itself: `rm -f {{.RUN}}/chain` before writing `start.txt`. The three-field
+   `epoch hour weekday` format stays; the engine reads field 2.
+2. Three new in-container verbs:
    ```yaml
-   remote:
-     trusted-hosts: [raw.githubusercontent.com]
-     expiry: 1h
+   report:
+     desc: Append the run summary to the Actions job page (stdout elsewhere), base rows then the engine's then the mirror's
+     silent: true
+     cmds:
+       - |
+         s=$(cut -d' ' -f1 {{.RUN}}/start.txt 2>/dev/null || date +%s); now=$(date +%s)
+         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+         ## {{.NAME}}: run {{.STATUS | default "succeeded"}}, $(date -u '+%Y-%m-%d %H:%M UTC')
+
+         | | |
+         |---|---|
+         | Started | $(date -u -d "@$s" '+%H:%M UTC' 2>/dev/null || date -u -r "$s" '+%H:%M UTC'), took $(( (now - s) / 60 )) min |
+         | Image | {{.IMAGE}} |
+         | Next run | $(test -f {{.RUN}}/chain && echo "queued now, work remains" || echo "at the schedule") |
+         EOF
+       - {task: report-engine}
+       - {task: report-mirror}
+   report-engine: {cmds: []}   # the engine's rows; an engine include replaces it
+   report-mirror: {cmds: []}   # the mirror's rows; a mirror replaces it
    ```
-2. **`.gitignore`** gains `.run/` and `.task/`. The library's `RUN` is
-   `{{.ROOT_DIR}}/.run`, and a mirror cannot override it: a library `vars:` value
-   shadows the mirror's root value. A mirror that used another run directory moves to
-   `.run` (ctan: `run/`, and every doc, menu line and fixture path that names it).
-3. **The include**, flattened, with `NAME`, `DESC`, `IMAGE`, and `PASS` for the host
-   environment names the pipeline reads (secrets that are not in an `op.env`, and any
-   env the code reads directly). `excludes:` lists the library verbs the mirror keeps
-   its own version of. A duplicate name without `excludes` is a parse error.
-4. **Rename colliding verbs.** These names are the library's and a mirror's verb with
-   the same name must be renamed or excluded: `default`, `image`, `image-build`,
-   `image-clean`, `run`, `op`, `sync`, `plan`, `render`, `check`, `render-update`,
-   `clean`, `clock`, `ping`, `ping-fail`. The mirror's whole run becomes `pipeline`, its
-   read-only half `plan-pipeline`.
-5. **Delete** `docker/`, the image vars and verbs, the installer step in the workflows,
-   the mirror's toolchain lock if it has one, and the `docker` ecosystem in
-   `.github/dependabot.yml` if present.
-6. **Caller workflows.** The whole of `.github/workflows/sync.yml`:
-   ```yaml
-   name: sync
-   on:
-     workflow_dispatch:
-       inputs:
-         vars:
-           description: 'KEY=value pairs for the pipeline, e.g. "RECONCILE=true MAX_BATCHES=8"'
-           type: string
-           default: ''
-   permissions:
-     contents: read
-     actions: write   # the called workflow chains the next run; it cannot raise this itself
-   concurrency: {group: sync, cancel-in-progress: false}
-   jobs:
-     sync:
-       uses: katoptra/lib/.github/workflows/sync.yml@v1
-       with: {vars: '${{ inputs.vars }}', timeout-minutes: 355}
-       secrets: inherit
-   ```
-   And `check.yml`:
-   ```yaml
-   name: check
-   on: {pull_request: {}}
-   permissions: {contents: read}
-   jobs:
-     check:
-       uses: katoptra/lib/.github/workflows/check.yml@v1
-   ```
-   `secrets: inherit` is what makes both the 1Password token and the repository-secrets
-   fallback reach the run. `permissions` in the caller is the ceiling for the called
-   workflow; without `actions: write` the chain step fails with 403 after a green run.
-   Old boolean inputs (`reconcile`, `max_batches`, `seed`) become `vars`:
-   `gh workflow run sync.yml -f vars='RECONCILE=true MAX_BATCHES=8'`.
-7. **Vars after the dashes.** `task sync -- MAX_BATCHES=8` sets task vars for the
-   pipeline inside the image. A `KEY=value` before the dashes is a host-side var and
-   never reaches the container. `PASS` is for environment variables only.
-8. **Secrets.** With an `op.env`, one `op run` resolves it around the whole run. Without
-   one, the reusable workflow exports every repository secret into the sync step's
-   environment by name and the ones in `PASS` cross into the container. The `op.env`
-   route is where every mirror ends up (the org checklist's phase 3); the secrets route
-   is the zero-change first step for ctan and tlnet.
-9. **`render.txt`**: `task render-update` once, commit it. `task check` from then on.
-10. **Docs**: README (how it runs, want your own, the secrets table), CLAUDE.md,
-    CONTRIBUTING.md, and any runbook. Remove every mention of `docker/`, the old
-    installer, the old verb names and the old inputs. Describe the current system only,
-    never the migration.
+   Rows are `| Label | value |` lines appended to the same table, so the three layers
+   read as one. Every row must tolerate a missing file: the report also runs after a
+   failed pipeline.
+3. `sync`'s wrapper reports the failure before pinging:
+   `task pipeline "$@" || { task report STATUS=failed || true; task ping-fail; exit 1; }`.
+4. The menu gains nothing; `report` is a pipeline verb, not an operator one.
+5. The reserved-names comment at the top of the file lists the three new verbs and the
+   engine's, since they share the namespace.
 
-### 2.2 ctan
+Gate: both examples' `task check` after `task render-update` (the proton example's
+pipeline gains `report` before `ping`; the diff is the new lines and nothing else).
 
-The biggest. 704 lines, of which about 120 remain.
+### A.2 The rsync engine, extracted from ctan
 
-- **Verbs renamed**: `sync` to `pipeline`, `plan` to `split` (the batch planner), `render`
-  to `pages` (the directory-page renderer). Every reference in `desc:` strings, the
-  menu, CLAUDE.md, `docs/reference.md` and the fixtures' menu lines follows. The
-  `desc:` of the old `sync` is the new `pipeline` desc with the renamed verbs.
-- **Verbs deleted**: `default`, `image`, `run`, `ping`. The library's are identical in
-  effect. `ping` reads `HEALTHCHECK_URL`, which always crosses.
-- **Verbs kept and excluded**: `clock`. ctan's clears `publish.txt`, `orphans.txt` and
-  `chain` before writing `start.txt`, and `reconcile` keys on field 2 of that file. The
-  library's clock writes a third field and clears nothing. Keep ctan's:
-  `excludes: [clock]`.
-- **Vars deleted**: `IMAGE`, `ENGINE`, `RUNNER`, `RUN`. `S3`, `URL`, `STATE`, `INDEXED`,
-  `INDEX`, `STAGING`, `SLASH`, `TL`, `TL_KEY`, `CEILING_GB`, `BATCH_GB`, `MAX_BATCHES`,
-  `RECONCILE`, `RETRY_BASE`, `RSYNC`, `CURL`, `AWS_FLAGS`, and the awk helpers stay as
-  root vars. `SLASH` and everything built on `RUN` now resolve under `.run`.
-- **`run/` becomes `.run/`** in `.gitignore`, the workflow's chain step (`run/chain` is
-  now `.run/chain`, which the reusable workflow already reads), and every doc. The
-  fixtures under `fixtures/run-root` and `fixtures/run-seed` are inputs passed as
-  `RUN=/work/fixtures/run-root` on the command line; a CLI var overrides the library's,
-  so they keep working. Verify with `task run -- task diff RUN=/work/fixtures/run-root`.
-- **`aws.config` stays**, with the root `env: AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'`.
-  The library image does not carry it. Inside the container the path is
-  `/work/aws.config`.
-- **Secrets**: no `op.env` yet. `PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-  AWS_ENDPOINT_URL AWS_REGION`. The image sets `AWS_REGION=auto` as well, so the secret
-  is redundant but harmless. `HEALTHCHECK_URL` crosses on its own.
-- **Image parity**: ctan's Dockerfile and lib's `rsync.Dockerfile` install the same
-  tools at the same versions (task 3.53.1, AWS CLI 2.36.24 trimmed to s3 and sts,
-  rsync, gnupg, xz, curl, perl). The `s3api delete-objects` call uses the s3 model, which
-  is kept. Confirm with `task run -- sh -c 'aws s3api help >/dev/null && echo ok'`.
-- **Menu**: the environment table at the bottom of ctan's menu (which secrets are set)
-  has no home in the library's menu. Drop it or fold one line into `MENU`.
-- **Workflow inputs**: `reconcile` and `max_batches` become `vars`. dispatch sends no
-  inputs, so the Taskfile defaults (`RECONCILE=auto`, `MAX_BATCHES=4`) apply, exactly as
-  today. Update `docs/reference.md` where it shows `-f reconcile=true`.
-- **The ruleset** (section 0) or the migration pull request cannot merge.
-- **Timeout**: `timeout-minutes: 355` in the caller (was 350; both under the limit).
-- **Colour**: the old workflow ran `task --color`. The library does not; the job log is
-  plain. Cosmetic; leave it.
+Create `engines/rsync.yml`. Source: `katoptra/ctan` at `main` (commit `2cd3b98` or later),
+`Taskfile.yml`. Copy verbatim, then apply exactly the changes listed. Verbatim means the
+awk stays byte for byte; the commands are the proof of equivalence in Phase C.
 
-### 2.3 tlnet
+**Header comment**: what an engine is, the reserved names, the hook contract, and the
+two rules (no `vars:` for anything a mirror owns; inline defaults).
 
-The smallest, and the only one that runs on the bare runner today. Moving it into the
-image is the largest behavioural change of the three, so section 5's render comparison
-matters most here.
+**`vars:`** may hold only values a mirror never sets: the derived `S3: s3://{{.BUCKET}}`
+and `URL: https://{{.HOST}}`, the awk helpers `SIZE`, `URLENC`, `ENCODE`, `ANCESTORS`,
+and `STATE: .state/applied.txt.xz`, `STAGING: '{{.ROOT_DIR}}/staging'`,
+`RSYNC`, `CURL`, `AWS_FLAGS` as in ctan. Everything a mirror tunes is an inline default
+where it is used: `{{.BATCH_GB | default 4}}`, `{{.MAX_BATCHES | default 4}}`,
+`{{.RECONCILE | default "auto"}}`, `{{.RETRY_BASE | default 15}}`,
+`{{.CEILING_GB | default 0}}` (0: no ceiling), `{{.LIST_FLOOR | default 0}}` (the
+truncated-listing guard, lines), `{{.TL}}` and `{{.TL_KEY}}` (empty: no TeX Live
+checks), `{{.FILTER}}` (rsync filter args for `list`; empty: the whole tree),
+`{{.OWN}}` (bucket-root keys the mirror owns and reconcile never deletes, space
+separated; empty: none), `{{.INDEX}}` (the directory-page key suffix; empty: none).
+`MAX_BATCHES` appears in `batches`, `delete`, `smoke` and `report-engine`; every
+occurrence takes the same inline default. ctan's `MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}'`
+root-var trick goes away; a CLI var overrides an inline default directly.
 
-- **Verbs renamed**: `sync` to `pipeline`. `plan-pipeline` is `fetch`, `verify`, `guard`:
-  it downloads but publishes nothing.
-- **Verbs deleted**: `default`, `ping`.
-- **Verbs kept**: `fetch`, `verify`, `guard`, `page`, `publish`, `stale`, `smoke`,
-  `report`. None collide.
-- **Vars**: `RUN: /tmp/tlnet-run` is shadowed by the library's `.run`, which is fine:
-  `report` reads the files the same run wrote. Drop the var. `STAGING` stays.
-- **Bucket names are hard-coded** in `page` (`s3://tlnet/index.html`) and `publish`
-  (`s3://tlnet/{}`) beside the `BUCKET` var. Introduce `BUCKET_NAME: tlnet` and derive
-  `BUCKET: s3://{{.BUCKET_NAME}}/{{.PREFIX}}`; use `{{.BUCKET_NAME}}` in both. This is
-  what makes a scratch run possible (`task sync -- BUCKET_NAME=tlnet-scratch`).
-- **Secrets are named differently.** tlnet has `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
-  `R2_ACCOUNT_ID` and the workflow built `AWS_ENDPOINT_URL` from the account id. The
-  pipeline reads `AWS_*`. Add the four `AWS_*` repository secrets beside the `R2_*` ones
-  (`AWS_ENDPOINT_URL` is `https://<account-id>.r2.cloudflarestorage.com`), set `PASS`
-  to the four names, and delete the `R2_*` secrets after the first green scheduled run.
-  Nothing else in the org reads them.
-- **`aws.config` stays**, with the root `env:` line, as in ctan.
-- **The runner's AWS CLI is gone.** tlnet ran whatever `ubuntu-latest` shipped; now it is
-  2.36.24 from the lock, and `aws s3 sync` semantics are what the Taskfile's comments
-  assume. `gpgv`, `shasum`, `xz`, `cmp`, `comm` are all in the image.
-- **Timeout**: `with: {timeout-minutes: 30}` in the caller. The reusable default is 355.
-- **Landing page**: `page` runs after `ping` today, on purpose (a broken page is one
-  email on a fresh mirror). Keep that order in `pipeline`.
-- **`check.yml`** ran `task --dry sync` on the runner. The library's renders inside the
-  image against `render.txt`, which is stricter. Commit the render.
+**Verbs, verbatim from ctan**: `list`, `normalise`, `state`, `rebuild`, `diff`,
+`batches`, `batch`, `fetch`, `publish`, `merge`, `checkpoint`, `remove`, `delete`,
+`reconcile`, `retry`. Plus:
 
-### 2.4 dropbox
+- `split`: ctan's `plan`, renamed. The batch planner. `plan` is a toolbox host verb.
+- `prepare`: ctan's `tlpdb`, renamed and guarded: the whole body runs only when `TL_KEY`
+  is non-empty (`status: ['test -z "{{.TL_KEY}}"']` on top of ctan's own status). With
+  `TL_KEY` empty it is the no-op hook.
+- `verify`: ctan's `verify`, guarded the same way. It is public (no `internal:`), as in
+  ctan, so a mirror can run it by hand against a canned batch.
+- `index`: a no-op hook, `{cmds: []}`. ctan's `index` and `render` are ctan's.
+- `smoke`: the first two commands of ctan's `smoke` (the sample read-back by encoded
+  URL, and the tlpdb sha512 read-back guarded by `TL`), the `TS` var included. The
+  directory-page check, the HTML canary and the Perl-client check are ctan's.
+- `report-engine`: ctan's `report` table rows except the header, the `Started` line,
+  `Directory pages` and `Signature`, rewritten as the rows the toolbox's table expects:
+  `Mirror`, `Delta`, `Published to R2`, `State`, `Storage`, and `Signature` guarded on
+  `RUN/tl` existing. Every `$(...)` tolerates a missing file (`n()` already does; add
+  `2>/dev/null || true` where ctan assumed the file).
+- `list` clears the per-run files ctan's `clock` cleared: `rm -f {{.RUN}}/publish.txt
+  {{.RUN}}/orphans.txt` as its first command. `clock` is the toolbox's.
+- `list` takes `{{.FILTER}}` between `{{.RSYNC}}` and `-rL --list-only`.
+- `normalise` compares the line count against `{{.LIST_FLOOR | default 0}}` instead of
+  the literal `400000`, and only when the floor is non-zero.
+- `split` reads `{{.CEILING_GB | default 0}}` and skips the ceiling test when it is 0.
+  `TL` in its awk stays; with `TL` empty, `index($1, "/tlpkg/") == 1` matches nothing,
+  which is right.
+- `reconcile` excludes, beside `.state/` and the page keys, every key in `OWN`:
+  `grep -vxF -f <(printf '%s\n' {{.OWN}})` after the `.state/` grep, only when `OWN` is
+  non-empty. With `INDEX` empty the page-key awk excludes nothing, which is right.
+- `report-engine`, `smoke`, `prepare`, `verify` are the four verbs a mirror may replace.
 
-Already toolbox-shaped: it is where most of `toolbox.yml` came from. The migration is
-mostly deletion, plus three behavioural seams.
+**Not in the engine**: `default`, `seed`, `image`, `run`, `clock`, `ping`, `render`,
+`index`, `sync`, and the `IMAGE`, `ENGINE`, `RUNNER`, `RUN`, `INDEX`, `INDEXED`, `SLASH`,
+`TL`, `TL_KEY`, `CEILING_GB`, `BATCH_GB`, `MAX_BATCHES`, `SEED`, `RECONCILE`,
+`RETRY_BASE` vars. `SLASH`, `INDEXED`, `INDEX` are ctan's; the rest are inline defaults.
 
-- **Verbs deleted**: `default`, `image`, `image-clean`, `clean`, `run`, `op`, `render`,
-  `sync`. The library's do the same.
-- **Verbs kept and excluded**: `clock`, `ping`, `ping-fail` (the migrator owns them) and
-  `plan` (dropbox's cats `.run/report.md` after the read-only half; the library's does
-  not). `excludes: [clock, ping, ping-fail, plan]`.
-- **Verbs kept**: `pipeline`, `plan-pipeline`, the phase verbs, `test`, `lint`, `fmt`,
-  `status`, `empty-trash`, `state-rollback`, `session-seal`. Rewrite `test`, `lint`,
-  `fmt` and the operator verbs to call the library's `run` and `op` the same way they
-  do now (`task: run` with `CLI_ARGS`). List every operator verb in `MENU`.
-- **Seam 1, inputs become vars.** The migrator reads `RECONCILE` and `RUN_BUDGET_MIN`
-  from the environment; the workflow set them from inputs. The reusable workflow cannot
-  set env for the job, so the Taskfile maps task vars to env at the root:
+**Example**: `examples/rsync/Taskfile.yml` becomes a consumer of toolbox plus engine,
+with `SOURCE`, `BUCKET`, `HOST`, `LIST_FLOOR: 1`, and
+`pipeline: [clock, list, state, rebuild, diff, split, prepare, batches, delete,
+reconcile, index, smoke, report, ping]`, `plan-pipeline: [clock, list, state, diff,
+split]`, and a `tools` verb as today. Its include of the engine is a path,
+`../../engines/rsync.yml`, flattened, like the toolbox. `render.txt` grows to every
+engine command: that is the library's own check of the engine.
+
+**Fixtures**: move `katoptra/ctan/fixtures/run-root` and `run-seed` (renamed
+`run-empty`) into `examples/rsync/fixtures/`, and give the example an `offline` verb that
+runs, inside the image, the checks ctan's menu listed: `normalise` on
+`fixtures/listing.txt` if ctan has one, `diff`, `split`, `merge B=...`, `retry CMD='exit 5'
+RETRY_BASE=0`, each with `RUN=/work/examples/rsync/fixtures/<dir>` and `STAGING`
+overrides. ctan keeps a copy of the fixtures its own `index`, `pages` and `smoke`
+overrides need (the `run-root` staging page) under its own `fixtures/`. Wire `task run
+-- task offline` into `ci.yml`'s rsync matrix entry after `task check`.
+
+**Docs**: README's engine section describes what now exists: the verb list, the four
+hooks, the vars a mirror sets (`SOURCE`, `BUCKET`, `HOST` required; `CEILING_GB`,
+`BATCH_GB`, `MAX_BATCHES`, `LIST_FLOOR`, `TL`, `TL_KEY`, `FILTER`, `OWN`, `INDEX`
+optional), the report layering, and a full tlnet-shaped consumer as the example. The
+sentence saying the engine lives in ctan goes. CONTRIBUTING adds: a change to an engine
+verb changes `examples/rsync/render.txt`. CLAUDE.md's constraints add the hook names to
+the reserved list. The spec under `docs/superpowers/specs/` is a decision record; leave it.
+
+Gate A.2: `cd examples/rsync && task image-build && task check && task run -- task offline`
+green; `examples/proton` `task check` green; `grep -c '^  [a-z-]*:' engines/rsync.yml`
+counts the verbs listed above and no other; `grep -n '^vars:' -A30 engines/rsync.yml`
+shows nothing a mirror sets.
+
+### A.3 Release
+
+```sh
+git push origin main && gh run watch --exit-status $(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
+git tag v1.0.0 && git push origin v1.0.0
+gh run watch --exit-status $(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+```
+
+Gate A.3, all of:
+
+- `git ls-remote --tags origin` shows `v1.0.0` and `v1`.
+- From a shell that is not logged in to GHCR: `docker manifest inspect
+  ghcr.io/katoptra/toolbox:rsync-v1` and `proton-v1` succeed. If they ask for
+  credentials the package is private: `gh api -X PATCH
+  /orgs/katoptra/packages/container/toolbox --input - <<< '{"visibility":"public"}'`
+  needs `read:packages` and `write:packages` on the token (`gh auth refresh -s
+  read:packages,write:packages`); or set it in the browser under the package's settings.
+- In a scratch directory, a Taskfile that includes
+  `https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml` and
+  `https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml`, flattened, with
+  a `.taskrc.yml`, lists `split` and `render-update` in `task --list`.
+- The org ruleset on ctan: the required status check named `check` becomes
+  `check / check`, because a reusable workflow's check reports as `<caller job> /
+  <called job>` and a required check that never reports blocks every pull request.
+  `gh api repos/katoptra/ctan/rulesets` lists it; `gh api -X PUT
+  repos/katoptra/ctan/rulesets/<id>` with the edited body updates it. If the token lacks
+  the scope, stop and ask the owner; nothing in Phase C can merge without it. tlnet and
+  dropbox have no rule (`gh api repos/katoptra/<r>/rules/branches/<default>` is empty).
+
+## Phase B: dropbox
+
+Already toolbox-shaped; it is where most of `toolbox.yml` came from. Default branch
+`master`, no rule: work on `master`, push. Clone at `~/Git/katoptra/dropbox`.
+
+### B.1 Files
+
+- **Add** `.taskrc.yml` (trusted host `raw.githubusercontent.com`, expiry `1h`);
+  `.gitignore` gains `.task/` (`.run/` is there).
+- **Delete** `docker/`, `config/toolchain.lock.toml`, the `IMAGE`, `ENGINE`, `PASS_ENV`
+  vars, the `default`, `image`, `image-clean`, `clean`, `run`, `op`, `render`, `sync`
+  verbs. The library's do the same. `RUN_EPOCH` stays if the migrator reads
+  `MIRROR_RUN_EPOCH`.
+- **Include**: `toolbox` by URL at `v1`, flattened, `NAME: dropbox`, `DESC` as the old
+  menu's, `IMAGE: ghcr.io/katoptra/toolbox:proton-v1`, `PASS: MIRROR_VERBOSE`,
+  `excludes: [clock, ping, ping-fail, plan, report-mirror]`.
+- **Keep**, unchanged in meaning: `pipeline`, `plan-pipeline`, every phase verb, `plan`
+  (dropbox's cats the report after the read-only half), `clock`, `ping`, `ping-fail`
+  (the migrator owns them), `test`, `lint`, `fmt`, `status`, `empty-trash`,
+  `state-rollback`, `session-seal`. Rewrite `test`, `lint`, `fmt` and the operator verbs
+  to call the library's `run` and `op` exactly as they call the old ones (`task: run`
+  with `CLI_ARGS`). Each operator verb gets a line in `MENU`.
+- **Vars to env.** The migrator reads `RECONCILE` and `RUN_BUDGET_MIN` from the
+  environment and the old workflow set them from inputs. The reusable workflow cannot
+  set job env, so the root maps task vars to env:
   ```yaml
   env:
     RECONCILE: '{{.RECONCILE | default ""}}'
     RUN_BUDGET_MIN: '{{.RUN_BUDGET_MIN | default ""}}'
   ```
-  and a manual run is `gh workflow run sync.yml -f vars='RECONCILE=true'`. Confirm the
-  migrator treats an empty string as unset. `PASS: MIRROR_VERBOSE` for the one env name
-  that is set by hand.
-- **Seam 2, the report.** The old workflow appended `.run/report.md` to the job summary
-  on every exit and ran `report-phase` first if the run died early. The reusable
-  workflow does neither. `report-phase` appends to `$GITHUB_STEP_SUMMARY` itself (the
-  library mounts it at its own path), and dropbox's `ping-fail`, which the library's
-  `sync` calls when `pipeline` fails, runs `report-phase` first when `.run/report.md` is
-  missing, then pings. Both files are inside the container where the secrets are.
-- **Seam 3, `test_taskfile.py`.** It slices the Taskfile between `default:` and
-  `  image:` to check the banner names every operator verb. Neither anchor exists after
-  the migration. Rewrite it to read the `MENU` var, or delete it; do not leave it
-  failing.
-- **`check.yml`** keeps a job for `task test` and `task lint` (the library's check
-  renders only) and adds a job that calls the library's check. Both must be green.
-- **The toolchain lock** in `config/` and the installer step in both workflows go. The
-  library's proton image carries the same proton-drive, age and Python packages at the
-  same versions; the one difference is task 3.45.4 to 3.53.1 inside the image. The
-  `.taskrc.yml` `remote:` section needs 3.51 or newer on the host, which the action
-  installs.
-- **`IMAGE`**: `ghcr.io/katoptra/toolbox:proton-v1`. The local `dropbox:toolbox` tag
-  is gone with the Dockerfile.
-- **The state id** in `config/mirror.toml` stays `dropbox-mirror`; it is the primary
-  key of the state database. Do not touch it.
-- **Chain**: dropbox already writes `.run/chain`; the reusable workflow reads it.
-- **Schedule**: nothing in dispatch triggers dropbox and it has no `schedule:`. Not
-  part of this migration; do not add one.
+  Confirm in `src/migrator/env.py` (or wherever they are read) that an empty string is
+  treated as unset; fix it there if not. A manual run is
+  `gh workflow run sync.yml -f vars='RECONCILE=true'`.
+- **Report.** `pipeline` becomes `[..., reconcile, report-phase, report, ping]`:
+  `report-phase` (the migrator, writes `.run/report.md` and closes the run row) then the
+  library's `report` (base rows, then `report-mirror`). dropbox's `report-mirror` is
+  `cat .run/report.md >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"` guarded on the file
+  existing. dropbox's `ping-fail` becomes: run `report-phase` if `.run/report.md` is
+  missing (`|| true`), then `python -m migrator ping fail`. The library's `sync` wrapper
+  already calls `report STATUS=failed` before `ping-fail`, so the failed-run summary
+  keeps the old workflow's behaviour without a workflow step.
+- **`test_taskfile.py`** slices the Taskfile between `default:` and `  image:`; neither
+  exists now. Rewrite it to assert every non-internal verb with a `desc:` that is
+  dropbox's own appears in the `MENU` var, and delete the old assertion. It must pass.
+- **Workflows**: `sync.yml` and `check.yml` from the templates in the appendix.
+  dropbox's `check.yml` keeps a second job, `tests`, that installs task via the
+  library's action (`uses: katoptra/lib/.github/actions/toolbox@v1`) and runs
+  `task test` and `task lint`. `with: {timeout-minutes: 355}` on the sync call.
+- **Docs**: README (the toolbox section, want your own, the schedule section's dispatch
+  file name is already `dropbox.ts`), CLAUDE.md, the runbook parts of README. No mention
+  of `docker/`, the lock, the installer, or the old verbs.
+- **Untouched**: `config/mirror.toml` (its `id` is the state's primary key), `op.env`,
+  `src/`, `tests/` except the one file, the state in R2.
 
-## 3. Footguns
+### B.2 Gates
 
-Things that pass a local check and break in production, or the other way round.
+1. `task check` after `task render-update`; diff `render.txt` against
+   `task run -- task --dry --force pipeline` captured from the old Taskfile before you
+   started (do that first: `git stash`-free, just run it on `master` before editing and
+   save to `/tmp/dropbox-before.txt`). Normalise with the appendix's `norm` and diff:
+   the only new lines are `report` and its hooks.
+2. `task test` (153 tests) and `task lint` inside the library's image.
+3. `task plan` from the laptop with `op` signed in: the read-only half runs against the
+   real account and prints the report. This is the live proof; dropbox has no scratch.
+4. Commit (`feat(toolbox): consume katoptra/lib`), push `master`.
+5. `gh workflow run sync.yml` and watch it green. Its summary shows the base rows, then
+   the migrator's report. The healthcheck received a ping.
+6. If it fails: `git revert HEAD`, push, `gh workflow run sync.yml`, watch, then debug.
 
-- **The include is fetched over the network on the host, once, then cached under
-  `.task/remote`, and the image runs offline.** A fresh checkout in Actions fetches
-  once per run. If raw.githubusercontent.com is down the run fails before doing
-  anything, which is safe; the healthcheck catches the missing ping.
-- **`task sync KEY=value` does nothing useful.** It is `task sync -- KEY=value`. The
-  workflow already does this; a hand-typed command is where it goes wrong.
-- **A library `vars:` value cannot be overridden from the mirror's root `vars:`.**
-  Today that is `RUN`, `ENGINE`, `PASS_ENV`, `VARIANT`, `TOP`, `PREFIX`. A CLI var still
-  overrides (`RUN=/work/fixtures/run-root`).
-- **Scratch runs ping the production healthcheck** if `HEALTHCHECK_URL` is exported.
-  Run scratch tests with it unset. A scratch run that fails would otherwise send `/fail`
-  and page you; one that succeeds would mask a stalled production run.
-- **A scratch run under the no-seed model fills the scratch bucket.** An empty bucket
-  rebuilds to an empty state and the delta is the whole tree. Cap it: for ctan
-  `MAX_BATCHES=1 BATCH_GB=1`; for tlnet the tree is 10 GB and `fetch` is the cost.
-  Empty the scratch bucket afterwards.
-- **`render` runs `sh:` vars.** A dynamic var that calls `aws` or the network fails the
-  offline render. ctan's and tlnet's are awk, `ls` and `date`; keep it that way.
-- **`--dry --force` renders status-gated verbs too.** ctan's `rebuild` and `reconcile`
-  appear in `render.txt` every time. That is correct and expected.
-- **The chain step needs `actions: write` in the caller**, and `gh workflow run` needs
-  the workflow file to still be named `sync.yml`.
+## Phase C: ctan
+
+The source of the engine; its migration is the proof that the extraction lost nothing.
+Default branch `main`, ruleset: pull request plus `check / check` required. Clone at
+`~/Git/katoptra/ctan`. Hourly at :42, 3 to 5 minutes a run.
+
+### C.1 Before editing
+
+```sh
+cd ~/Git/katoptra/ctan && git switch main && git pull --ff-only
+task run -- task --dry --force sync > /tmp/ctan-before.txt 2>&1     # the old image, the old Taskfile
+gh run list --workflow sync.yml --limit 1                            # note the last green run id
+git switch -c josh/toolbox
+```
+
+### C.2 Files
+
+- **Add** `.taskrc.yml`; `.gitignore` becomes `staging/`, `.run/`, `.task/`.
+- **Delete** `docker/`, the `IMAGE`, `ENGINE`, `RUNNER`, `RUN`, `S3`, `URL`, `STATE`,
+  `STAGING`, `RSYNC`, `CURL`, `AWS_FLAGS`, `SIZE`, `URLENC`, `ENCODE`, `ANCESTORS`,
+  `MAX_BATCHES`, `RECONCILE` vars (the engine's), and every verb the engine or toolbox
+  now provides: `default`, `sync`, `clock`, `list`, `normalise`, `state`, `rebuild`,
+  `diff`, `plan`, `tlpdb`, `batches`, `batch`, `fetch`, `verify`, `publish`, `merge`,
+  `checkpoint`, `remove`, `delete`, `reconcile`, `report`, `ping`, `retry`, `image`,
+  `run`. The `fixtures/` that moved to lib go too; ctan keeps what its overrides need.
+- **Root vars**: `SOURCE`, `HOST`, `BUCKET`, `TL`, `TL_KEY`, `CEILING_GB: 200`,
+  `BATCH_GB: 4`, `LIST_FLOOR: 400000`, `INDEX`, `INDEXED`, `SLASH: '{{.RUN}}/slash'`
+  (the library's `RUN` is `.run`, which is what `run/` becomes everywhere), and
+  `env: AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'`.
+- **Includes**: `toolbox` by URL at `v1`, `NAME: ctan`, `DESC`, `IMAGE:
+  ghcr.io/katoptra/toolbox:rsync-v1`, `PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  AWS_ENDPOINT_URL AWS_REGION`, `excludes: [report-engine, report-mirror]`; `rsync`
+  engine by URL at `v1`, flattened, `excludes: [index, smoke]`.
+- **Verbs kept**: `pipeline` (the old `sync`'s list with `plan` now `split`, `tlpdb` now
+  `prepare`, and `report` before `ping`), `plan-pipeline: [clock, list, state, diff,
+  split]`, `pages` (the old `render`, renamed; `render` is the toolbox's), `index` (calls
+  `pages`), `smoke` (ctan's full version), `report-mirror` (the `Directory pages` row).
+  `MENU` lists the offline checks that remain meaningful.
+- **`run/` is `.run/`** everywhere: `.gitignore`, CLAUDE.md, `docs/reference.md`, the
+  menu lines, and `SLASH`. The fixtures ctan keeps are passed as
+  `RUN=/work/fixtures/<dir>` on the command line, which overrides the library's `RUN`.
+- **Workflows** from the appendix, `with: {vars: ..., timeout-minutes: 355}`. The old
+  `reconcile` and `max_batches` inputs become `vars`; dispatch sends none, so the
+  inline defaults (`auto`, `4`) apply, as today. The chain step ctan carries is the
+  library's now; delete it.
+- **Docs**: README, CLAUDE.md, CONTRIBUTING.md, `docs/reference.md`: the pipeline is
+  described by its verbs with the new names, secrets by the `PASS` line, the toolbox by
+  a link to lib, runbook commands as `gh workflow run sync.yml -f vars='...'` and
+  `task sync -- ...`. No `docker/`, no installer, no `run/`, no old names.
+
+### C.3 Gates
+
+1. `task render-update`; `norm` both files (appendix) and diff. Every remaining line is
+   one of: a renamed verb, `.run` for `run`, the report's new rows, the `list` line
+   carrying the two `rm -f` that moved from `clock`, the `FILTER`, `LIST_FLOOR`,
+   `CEILING_GB` and `OWN` conditionals rendering to the same commands with ctan's
+   values. Anything else is a behaviour change: fix it in lib (a `v1.0.1`) or in ctan
+   before going on.
+2. The offline fixtures ctan kept: `task run -- task pages RUN=/work/fixtures/run-root
+   STAGING=/work/fixtures/run-root/staging` and the smoke over `file://` as the old menu
+   showed. Green.
+3. `task run -- sh -c 'aws s3api help >/dev/null && aws s3 ls --no-sign-request
+   --endpoint-url http://127.0.0.1:1 s3://x 2>&1 | grep -qi refused && echo image ok'`.
+4. Scratch, if R2 credentials are in the shell (the repository secrets are not readable;
+   the owner exports an R2 token or this gate is skipped and noted in the report):
+   `unset HEALTHCHECK_URL; task run -- task pipeline BUCKET=ctan-scratch MAX_BATCHES=1
+   BATCH_GB=1`. Pass: reaches `report`, the scratch bucket holds `.state/applied.txt.xz`
+   and one batch of keys, `.run/chain` exists. Empty the scratch bucket after.
+5. Push the branch, open the PR, `check / check` green.
+6. Merge between :50 and :30 (`gh pr merge --squash --delete-branch`). Then
+   `gh workflow run sync.yml` and watch it green. Its summary shows base rows, engine
+   rows, ctan's `Directory pages` row, numbers in the usual range (hundreds uploaded, a
+   handful deleted, orphans 0 outside hour 03). `df` in the log shows a pull, not a
+   build. The healthcheck received a ping. Then let :42 fire and watch that one too.
+7. Rollback is `git revert` of the squash commit through a PR (the ruleset applies to
+   reverts too), `gh workflow run sync.yml`, watch. The state file, its key and its
+   format are the same before and after, so the old pipeline resumes from it.
+
+## Phase D: tlnet
+
+The largest behavioural change: tlnet stops being a whole-tree `rsync` then `aws s3
+sync` pipeline on the bare runner and becomes a consumer of the rsync engine at the
+subtree, in the image, with a state file, batches and the daily reconcile. It ends with
+the same keys in the same bucket at the same paths. Daily at 03:30 UTC, 30-minute
+timeout today. Default branch `main`; check for a rule first.
+
+### D.1 Why it is safe to do this way
+
+The engine's `state` finds no state file, rebuilds it from a listing of the bucket
+joined to upstream on size, and takes every matching key as applied. tlnet's bucket
+already holds the subtree at CTAN's own paths, uploaded by `aws s3 sync`, so the
+rebuilt state covers nearly everything and the first delta is a day's changes. `OWN:
+index.html` keeps reconcile off the landing page. A 03:30 start is hour 03, so
+`RECONCILE=auto` reconciles every run, which is what the old whole-tree sync did
+implicitly with `stale`.
+
+### D.2 Files
+
+- **Add** `.taskrc.yml`; `.gitignore` becomes `staging/`, `.run/`, `.task/`.
+- **Delete** every old verb (`default`, `sync`, `fetch`, `verify`, `guard`, `page`,
+  `publish`, `stale`, `smoke`, `report`, `ping`) and every old var except `HOST`,
+  `TL_KEY` and the landing-page ones.
+- **Root vars**:
+  ```yaml
+  vars:
+    SOURCE: rsync://rsync.dante.ctan.org/CTAN/
+    HOST: tlnet.ijosh.com
+    BUCKET: tlnet
+    TL: systems/texlive/tlnet
+    TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
+    CEILING_GB: 10
+    OWN: index.html
+    FILTER: >-
+      --exclude=*.r[0-9]*.tar.xz --exclude=/systems/texlive/tlnet/update-tlmgr-r*
+      --include=/systems/ --include=/systems/texlive/ --include=/systems/texlive/tlnet/***
+      --exclude=*
+  env:
+    AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
+    AWS_ACCESS_KEY_ID: {sh: 'printf %s "$R2_ACCESS_KEY_ID"'}
+    AWS_SECRET_ACCESS_KEY: {sh: 'printf %s "$R2_SECRET_ACCESS_KEY"'}
+    AWS_ENDPOINT_URL: {sh: 'printf https://%s.r2.cloudflarestorage.com "$R2_ACCOUNT_ID"'}
+  ```
+  `SOURCE` is the CTAN root and `FILTER` narrows the listing to the subtree, so paths
+  keep their `systems/texlive/tlnet/` prefix and every key lands where `aws s3 sync`
+  put it. The two excludes are what tlnet's old `fetch` excluded: the revision-stamped
+  duplicates that would double the 10 GB. The `env:` mapping lets the three `R2_*`
+  repository secrets stay as they are: they cross by name via `PASS`, and the Taskfile
+  turns them into what the AWS CLI reads, inside the container, in memory. Renaming
+  the secrets to `AWS_*` or moving to an `op.env` is a later step, not this one.
+  `LIST_FLOOR`: run `task run -- task list` once, count `.run/upstream.txt`, set the
+  floor to half of it.
+- **Includes**: `toolbox` at `v1` with `NAME: tlnet`, `DESC`, `IMAGE: rsync-v1`,
+  `PASS: R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID`,
+  `excludes: [report-engine, report-mirror]`; `rsync` engine at `v1`, `excludes: [index]`.
+- **Verbs kept**: `pipeline: [clock, list, state, rebuild, diff, split, prepare,
+  batches, delete, reconcile, index, smoke, report, ping]`, `plan-pipeline: [clock,
+  list, state, diff, split]`, `index` (the old `page`: upload `site/index.html` with the
+  date filled in to `s3://{{.BUCKET}}/index.html`, `no-cache`, `text/html`; it runs
+  before `smoke` now rather than after `ping`, which is fine: it is one small upload),
+  `report-mirror` (a `Landing page` row). The engine's `smoke` reads the tlpdb sha512
+  back through the domain, which is exactly the old `smoke`.
+- **Workflows** from the appendix, `with: {vars: ..., timeout-minutes: 60}`. The old
+  check ran `task --dry sync` on the runner; the library's renders in the image against
+  `render.txt`.
+- **`aws.config` stays.** The old `verify` (signature chain, xz matches, no duplicates,
+  every container checksummed) is the engine's `prepare` and `verify` with `TL` set;
+  the old `guard` is `CEILING_GB`; `stale` is `reconcile`.
+- **Docs**: README (how it runs, the secrets table, want your own), CLAUDE.md,
+  CONTRIBUTING.md. The old pipeline's names go.
+
+### D.3 Gates
+
+1. No before-and-after render diff is possible; the pipeline is a different one. Instead:
+   `task render-update`, then read `render.txt` end to end and confirm every command
+   names `tlnet`, `systems/texlive/tlnet`, the `FILTER` and `index.html` where expected,
+   and nothing names `ctan`.
+2. `task run -- task list` inside the image with no credentials: `.run/upstream.txt`
+   holds only `systems/texlive/tlnet/` paths, none matching `\.r[0-9]+\.tar\.xz$`, none
+   under `update-tlmgr-r`, and the count is a few thousand. Set `LIST_FLOOR`.
+3. Scratch, if credentials are in the shell: `unset HEALTHCHECK_URL; task run -- task
+   pipeline BUCKET=tlnet-scratch MAX_BATCHES=1 BATCH_GB=1` (the `env:` mapping needs
+   `R2_*` exported). Pass: `prepare` verifies the signature, one batch lands, the state
+   file exists in the scratch bucket. The `index` upload lands `index.html`. `smoke`
+   fails on scratch because the domain serves the real bucket; that is expected, note
+   it, and it is the only allowed failure. Empty the scratch bucket after.
+4. Push, PR, check green, merge (or push `main` directly if there is no rule).
+5. `gh workflow run sync.yml` outside 03:00 to 04:30 UTC and watch. Pass: `state`
+   rebuilds from the bucket (the log says so), the delta is small, `verify` passes,
+   `reconcile` deletes nothing or only real stale keys (`orphans.txt` in the summary
+   is a small number and every key in it is a versioned duplicate or an old file, never
+   `index.html`), `smoke` matches, the summary shows the `Signature` row and the
+   `Landing page` row, storage under 10 GB, ping received.
+6. Rollback: revert, run by hand, watch. The old pipeline never read a state file and
+   `aws s3 sync` is idempotent, so it resumes cleanly. The `.state/` prefix the engine
+   created is harmless to it.
+
+## Phase E: references, checklist, cleanup
+
+- **lib**: delete this file. README's engine section, CONTRIBUTING and CLAUDE.md are
+  already updated in A.2; re-read them against what shipped. `examples/` render files
+  current. Tag `v1.0.1` if anything in lib changed during B to D, and note that every
+  mirror pinned to `v1` picks it up on its next run.
+- **Site** (`katoptra/site`, `data/`): if a mirror entry names an engine, image or
+  pipeline shape, update it. The org profile README is rendered from the same data.
+- **jshvn/dispatch**: untouched; verify with `gh api repos/jshvn/dispatch/contents/schedules`
+  that ctan and tlnet still target `sync.yml` on `main`. dropbox has no schedule; leave
+  it that way and say so in the report.
+- **Healthchecks**: untouched. Confirm each check received pings from the new runs.
+- **The org checklist artifact** (`claude.ai/code/artifact/0ff4e1c2-32a0-4884-91ed-531fa5c6d852`,
+  db collection `checklist`, doc `katoptra`): tick `p4-engine`, `p4-examples`,
+  `p4-fixtures`, `p4-tag`, `p5-ctan`, `p5-dropbox`, `p5-tlnetc`, `p5-cleanup`.
+- **Every mirror** passes the compliance block below.
+- **Memory**: the migration-state memory file records the outcome and the date.
+
+## Footguns
+
+- **`task sync KEY=value` sets a host var and does nothing inside.** It is `task sync --
+  KEY=value`. The reusable workflow does this; hand-typed commands are where it slips.
+- **A library `vars:` value cannot be overridden from a mirror's root `vars:`.** `RUN`,
+  `ENGINE`, `PASS_ENV`, `VARIANT`, `TOP`, `PREFIX` in the toolbox; `S3`, `URL`, `STATE`,
+  `STAGING`, `RSYNC`, `CURL`, `AWS_FLAGS` and the awk helpers in the engine. A CLI var
+  still overrides (`RUN=/work/fixtures/run-root`). This is why the engine's tunables are
+  inline defaults and why ctan's `run/` becomes `.run/`.
+- **Two includes, one namespace.** A verb defined in both the toolbox and the engine is
+  a parse error. `report-engine` is defined in both on purpose: the engine consumer's
+  toolbox include must carry `excludes: [report-engine]`. Add it to the templates in
+  the appendix for ctan and tlnet, never for dropbox.
+- **`--dry --force` renders `status:`-gated verbs**, so `rebuild`, `reconcile`, `prepare`
+  and the `TL_KEY` guard all appear in every `render.txt`. Correct.
+- **`render` runs `sh:` vars.** `BATCHES` (`ls`), `TS` (`awk`), the engine's helpers: all
+  local. Nothing may call `aws` or the network in a `sh:` var.
+- **The caller must grant `actions: write`** or the chain step fails with 403 after a
+  green run. A called workflow can only lower the token's permissions.
+- **`check / check`** is the reusable check's name. The ctan ruleset must require that.
 - **`secrets: inherit` exports every repository secret into the sync step.** GitHub
-  masks the values in the log. Do not `env | sort` in a pipeline, in a test, or in a
-  report.
-- **The reusable check's job name is `check / check`.** A ruleset requiring `check`
-  never sees it (section 0).
-- **dispatch is untouched** and keeps sending `workflow_dispatch` to `sync.yml` on the
-  default branch with no inputs. The workflow file name, the trigger and the default
-  branch must not change. The old inputs are gone; dispatch never sent them.
-- **The container has no tty and no `-i`.** Anything that prompted (`prompt:` in a task,
-  `aws` pagination) hangs or dies. dropbox's `empty-trash` has a `prompt:`; it runs on
-  the host before `op`, so it still prompts there. Nothing else does.
-- **User and group inside the container are the host's**, `HOME=/tmp`. The AWS CLI
-  writes its cache under `/tmp`. Files the run writes under `/work` are owned by the
-  runner user, as today.
-- **`GITHUB_STEP_SUMMARY` is mounted at its own path.** A report that writes to it works
-  in Actions and to stdout on a laptop only if it uses `${GITHUB_STEP_SUMMARY:-/dev/stdout}`
-  as ctan and tlnet do.
-- **Two mirrors reconciling in the same hour** is not a migration concern (ctan at 03,
-  tlnet has no reconcile) but keep ctan's `03` when touching `clock`.
-- **Never create a repository at an old name** (`jshvn/ctan`, `jshvn/dropbox-mirror`).
-  GitHub deletes the redirect permanently.
-- **Do not fix lib from a mirror.** An agent that needs a library change (a missing tool,
-  a verb that should be shared, a workflow input) stops, writes down exactly what and
-  why, and reports. A library release moves `v1` for all three mirrors at once.
+  masks them in logs. Never `env | sort` anywhere in a pipeline, a test or a report.
+- **Scratch runs ping the production healthcheck** unless `HEALTHCHECK_URL` is unset,
+  and a failing scratch run would send `/fail`.
+- **A scratch bucket under the no-seed model fills itself**: cap with `MAX_BATCHES=1
+  BATCH_GB=1` and empty it afterwards.
+- **tlnet's `FILTER` order matters.** rsync applies filter rules first match wins:
+  the two excludes for revision-stamped files come before the includes, the catch-all
+  `--exclude=*` last. Gate D.3.2 is the test.
+- **tlnet's first reconcile deletes what upstream no longer has** and what the old
+  pipeline never removed. The old `stale` did the same, so the set should be small.
+  Read `orphans.txt` in the first summary before trusting the schedule.
+- **`reconcile` keys on hour 03** from `start.txt` field 2. tlnet at 03:30 reconciles
+  daily; ctan once a day. Neither `clock` nor the schedule changes.
+- **dispatch is untouched** and sends `workflow_dispatch` to `sync.yml` on the default
+  branch with no inputs. Workflow file name, trigger and default branch must not change.
+- **The container has no tty and no `-i`.** Nothing may prompt. dropbox's `empty-trash`
+  prompts on the host before `op`; it is fine.
+- **`GITHUB_STEP_SUMMARY` is mounted at its own path.** Reports write to
+  `${GITHUB_STEP_SUMMARY:-/dev/stdout}`.
+- **The include is fetched over the network on the host once per run and the image is
+  offline.** A raw.githubusercontent.com outage fails the run before anything happens.
+- **Never create a repository at an old name.** GitHub deletes the redirect.
+- **A change that belongs in lib goes in lib**, as a patch release. Do not paper over an
+  engine gap in a mirror; three mirrors would each carry the patch.
 
-## 4. Compliance: the checks every repo passes at the end
-
-Run in the mirror's root after the migration commit. Every line is a test with a
-pass condition; the block is meant to be pasted.
+## Compliance block, per mirror
 
 ```sh
 ok=1; f() { echo "FAIL: $1"; ok=0; }
-# The include, its trust file, the ignores, the committed render
 grep -q 'katoptra/lib/v1/toolbox.yml' Taskfile.yml      || f "include not pinned to v1"
 grep -q 'flatten: true' Taskfile.yml                    || f "include not flattened"
 grep -qs raw.githubusercontent.com .taskrc.yml          || f ".taskrc.yml missing or untrusted"
 grep -qx '\.run/' .gitignore && grep -qx '\.task/' .gitignore || f ".gitignore lacks .run/ or .task/"
 test -s render.txt                                      || f "render.txt missing"
-# Nothing of the old toolbox remains
 test ! -d docker                                        || f "docker/ still present"
 grep -rqs 'setup-task\|toolchain.lock\|task_linux_amd64' .github/ && f "old installer in workflows"
-grep -q '^  \(ENGINE\|RUNNER\|PASS_ENV\):' Taskfile.yml       && f "old toolbox vars in Taskfile"
+grep -q '^  \(ENGINE\|RUNNER\|PASS_ENV\|RUN\):' Taskfile.yml      && f "toolbox vars redefined in Taskfile"
 grep -q 'IMAGE:' Taskfile.yml && ! grep -q 'IMAGE: ghcr.io/katoptra/toolbox:' Taskfile.yml && f "IMAGE is not the GHCR image"
 grep -qi 'docker/' README.md CLAUDE.md                  && f "docs still mention docker/"
 grep -qi 'seed' Taskfile.yml                            && f "seed still in Taskfile"
-# The callers
 grep -q 'katoptra/lib/.github/workflows/sync.yml@v1' .github/workflows/sync.yml   || f "sync.yml does not call lib@v1"
 grep -q 'katoptra/lib/.github/workflows/check.yml@v1' .github/workflows/check.yml || f "check.yml does not call lib@v1"
 grep -q 'secrets: inherit' .github/workflows/sync.yml   || f "sync.yml lacks secrets: inherit"
 grep -q 'actions: write' .github/workflows/sync.yml     || f "sync.yml lacks actions: write"
 grep -q 'workflow_dispatch' .github/workflows/sync.yml  || f "sync.yml lacks workflow_dispatch"
 grep -q 'schedule:' .github/workflows/sync.yml          && f "sync.yml has a schedule"
-# Reserved names: a mirror verb with a library name must be excluded
-for v in default image image-build image-clean run op sync plan render check render-update clean clock ping ping-fail; do
+for v in default image image-build image-clean run op sync plan render check render-update clean clock ping ping-fail report report-engine report-mirror \
+         list normalise state rebuild diff split batches batch fetch publish merge checkpoint remove delete reconcile retry prepare verify index smoke; do
   grep -q "^  $v:" Taskfile.yml && ! grep -q "excludes:.*\b$v\b" Taskfile.yml && f "verb $v collides and is not excluded"
 done
-# The contract verbs exist, the library's resolve, the menu prints, the render is current
 grep -q '^  pipeline:' Taskfile.yml && grep -q '^  plan-pipeline:' Taskfile.yml || f "pipeline or plan-pipeline missing"
 task --list 2>/dev/null | grep -q 'render-update'       || f "library verbs do not resolve"
 task >/dev/null 2>&1                                    || f "menu does not print"
@@ -338,138 +552,91 @@ task check >/dev/null 2>&1                              || f "task check fails"
 test $ok = 1 && echo "compliant: $(basename "$PWD")"
 ```
 
-And on GitHub, per repo:
+For an engine consumer, additionally: `grep -q 'katoptra/lib/v1/engines/rsync.yml'
+Taskfile.yml` and `grep -q 'excludes:.*report-engine' Taskfile.yml`. Note the loop
+flags a mirror's `verify`, `smoke`, `index` or `prepare` only when the engine include
+does not exclude them, which is the rule.
 
-```sh
-r=katoptra/<repo>
-gh secret list --repo $r                                   # what the run can see
-gh api repos/$r/rules/branches/$(gh api repos/$r --jq .default_branch) --jq '.[].type'
-gh workflow list --repo $r                                 # sync and check, nothing else
-gh run list --repo $r --workflow sync.yml --limit 3        # the last runs, green
-```
+## End state, checked over the following day
 
-Across the three at once, from lib's root: every mirror renders against the tag it
-pins, which is what a lib release will check from now on.
-
-```sh
-for r in ctan tlnet dropbox; do (cd ../$r && task check) || echo "FAIL $r"; done
-```
-
-## 5. Verification: does the pipeline still run?
-
-In order. Each step is a gate; a failure means stop and understand, not retry.
-
-### 5.1 Same commands, before and after (offline, no credentials)
-
-The strongest check, and it needs the old Taskfile. Before changing anything:
-
-```sh
-git stash list >/dev/null; git switch -c josh/toolbox
-task run -- task --dry --force sync 2>&1 > /tmp/before.txt      # ctan, dropbox: inside the old image
-task --dry sync > /tmp/before.txt 2>&1                          # tlnet: on the host, as check.yml did
-```
-
-After the migration, `task render` writes `.run/render.txt`. Normalise both and diff:
-
-```sh
-norm() { sed -E 's/\[sync\]/[pipeline]/; s/\[plan\]/[split]/; s/\[render\]/[pages]/; s#/work/run#/work/.run#g; s#/tmp/tlnet-run#/work/.run#g; /^task: \[(image|run|op|default)\]/d' "$1" | grep '^task: \[' ; }
-diff <(norm /tmp/before.txt) <(norm .run/render.txt)
-```
-
-The diff must be empty except for lines you can name and justify: the renamed verbs
-above, `.run` for `run`, the bucket-name var in tlnet's `page` and `publish`, dropbox's
-report-phase appending to the summary. Any other difference is a behaviour change and
-the migration is not done. Commit the justified render as `render.txt`.
-
-### 5.2 The image has the tools (offline)
-
-```sh
-task run -- sh -c 'rsync --version | head -1; aws --version; gpgv --version | head -1; xz --version | head -1; shasum --version'   # rsync image
-task run -- sh -c 'python --version; proton-drive version | head -1; age --version; python -c "import boto3, requests"'         # proton image
-task run -- sh -c 'echo offline=$TASK_REMOTE_OFFLINE region=$AWS_REGION; test -r aws.config && echo aws.config ok'
-```
-
-### 5.3 The offline fixtures still pass (ctan, dropbox)
-
-ctan: every line of the old menu's "offline checks" block, with `RUN=/work/fixtures/...`.
-dropbox: `task test` and `task lint`, 153 tests.
-
-### 5.4 Scratch (ctan, tlnet; credentials exported, `HEALTHCHECK_URL` unset)
-
-```sh
-export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_ENDPOINT_URL=...; unset HEALTHCHECK_URL
-task run -- task pipeline BUCKET=ctan-scratch MAX_BATCHES=1 BATCH_GB=1        # ctan
-task run -- task fetch verify guard publish BUCKET_NAME=tlnet-scratch          # tlnet, up to publish
-```
-
-Pass: the run reaches `report` (ctan) or `publish` finishes (tlnet); the scratch bucket
-holds the state file and the batch's keys; `.run/chain` exists for ctan. The `smoke`
-and `page` verbs need the real domain and are proven by the production run. Empty the
-scratch bucket afterwards. dropbox has no scratch: `task plan` is the read-only proof
-(session, state fetch, inventory, delta, plan) and it must print the report.
-
-### 5.5 The pull request
-
-Push the branch, open the PR. `check / check` must be green: it renders inside the
-image on the runner and diffs `render.txt`, which proves the include resolves from
-GitHub, the image pulls from GHCR, and the render matches what 5.1 justified. dropbox's
-test job must be green too.
-
-### 5.6 The merge window
-
-- **ctan**: the run fires at :42 and takes 3 to 5 minutes. Merge between :50 and :30.
-  Note the id of the last green run first: `gh run list --workflow sync.yml --limit 1`.
-- **tlnet**: fires at 03:30 UTC. Merge any time except 03:00 to 04:30.
-- **dropbox**: nothing scheduled. Merge when no run is in progress
-  (`gh run list --workflow sync.yml --limit 1` shows completed).
-
-Then, before the schedule does: `gh workflow run sync.yml` and watch it.
-
-```sh
-gh workflow run sync.yml && sleep 20 && gh run watch --exit-status $(gh run list --workflow sync.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-```
-
-Pass: green; the job summary shows the report with numbers in the usual range (ctan: a
-few hundred uploads and a handful of deletes in an hour, not thousands; tlnet: storage
-within the limit, signature line present; dropbox: the run row closed, percent mirrored
-unchanged or up). The healthcheck received a ping. `df` in the log shows the image
-pulled, not built.
-
-### 5.7 Rollback
-
-`git revert <merge commit>` on the default branch restores the old Taskfile, image and
-workflow in one commit. Nothing in the migration changes what is in the bucket, the
-state file's format or its key, so the old pipeline resumes from the same state. Revert,
-`gh workflow run sync.yml`, watch it green, then work out what happened.
-
-## 6. Testing the end state
-
-After the merge, over the following day, per mirror. All of these should be true
-without anyone touching anything.
-
-| Check | ctan | tlnet | dropbox |
+| | ctan | tlnet | dropbox |
 |---|---|---|---|
-| Three consecutive scheduled runs green | hourly, so three hours | three nights | three chained or manual runs |
-| Healthcheck shows pings at the schedule, no `/fail` | yes | yes | yes |
-| The mirror is fresh | `curl -s https://ctan.ijosh.com/timestamp` within the hour | `tlnet.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512` matches the run's | report's percent mirrored |
-| No unexpected deletions | run summary delete count normal; `orphans.txt` empty outside 03 | `stale.txt` lines are real removals | trash count normal |
-| Storage unchanged | bucket size within a batch of yesterday's | under `LIMIT_MB` | R2 state history has one new object per run |
-| A pull request runs `check / check` green | yes | yes | yes, plus tests |
-| `task` on a laptop prints the menu and `task check` passes from a fresh clone | yes | yes | yes |
-| The repo is: Taskfile, `.taskrc.yml`, `render.txt`, two ten-line callers, docs, and its own files | fixtures, `aws.config`, docs | `site/`, `aws.config` | `src/`, `tests/`, `config/`, `op.env` |
-| Section 4's block passes | yes | yes | yes |
+| Three consecutive scheduled runs green | three hours | three nights | three chained or manual runs |
+| Healthcheck pinged on schedule, no `/fail` | yes | yes | yes |
+| Fresh | `curl -s https://ctan.ijosh.com/timestamp` within the hour | the tlpdb sha512 read back equals the run's | report's percent mirrored |
+| No unexpected deletions | orphans 0 outside 03; deletes a handful | orphans only stale keys; `index.html` present | trash count normal |
+| Storage | within a batch of yesterday | under 10 GB | one new history object per run |
+| Summary has base, engine and mirror rows | yes | yes | base rows then the migrator's report |
+| `check / check` green on a PR | yes | yes | yes, plus `tests` |
+| Fresh clone: `task` prints the menu, `task check` passes | yes | yes | yes |
+| Compliance block passes | yes | yes | yes |
+| Repo holds only: Taskfile, `.taskrc.yml`, `render.txt`, two callers, docs, own files | fixtures, `aws.config`, docs | `site/`, `aws.config` | `src/`, `tests/`, `config/`, `op.env` |
 
-When all three columns are complete, update the org checklist's phase 5 items, and
-lib's README loses the sentence that says the rsync engine lives in ctan only once the
-engine is actually extracted, which is the next plan, not this one.
+## What the report back looks like
 
-## 7. What each agent reports back
+1. lib: the release, the engine's verb count, the two example checks, the ruleset change.
+2. Per mirror: the commit or PR, the render diff with every remaining line justified
+   (or, for tlnet, the read-through), the scratch summary or the reason it was skipped,
+   the first production run's summary and ping time.
+3. Anything changed in lib during B to D, and the patch tag that carries it.
+4. Anything in this document that was wrong. The next migration reads that list.
 
-One message per mirror, in this shape, so the three can be compared:
+## Appendix: the caller workflows and the normaliser
 
-1. The migration commit and the PR link.
-2. The 5.1 diff, with every remaining line justified.
-3. The scratch run's summary (or dropbox's plan report).
-4. The first production run's summary and the healthcheck ping time.
-5. Anything found that belongs in lib, with the exact verb, tool or input, and why.
-6. Anything in this document that was wrong or missing.
+`.github/workflows/sync.yml`, whole file:
+
+```yaml
+name: sync
+on:
+  workflow_dispatch:
+    inputs:
+      vars:
+        description: 'KEY=value pairs for the pipeline, e.g. "RECONCILE=true MAX_BATCHES=8"'
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: write   # the called workflow chains the next run; a called workflow cannot raise this
+concurrency: {group: sync, cancel-in-progress: false}
+jobs:
+  sync:
+    uses: katoptra/lib/.github/workflows/sync.yml@v1
+    with: {vars: '${{ inputs.vars }}', timeout-minutes: 355}
+    secrets: inherit
+```
+
+`.github/workflows/check.yml`, whole file (dropbox adds the `tests` job):
+
+```yaml
+name: check
+on: {pull_request: {}}
+permissions: {contents: read}
+jobs:
+  check:
+    uses: katoptra/lib/.github/workflows/check.yml@v1
+```
+
+The include block for an engine consumer:
+
+```yaml
+includes:
+  toolbox:
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml
+    flatten: true
+    excludes: [report-engine, report-mirror]
+    vars: {NAME: ctan, DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/, IMAGE: ghcr.io/katoptra/toolbox:rsync-v1, PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL AWS_REGION}
+  rsync:
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
+    flatten: true
+    excludes: [index, smoke]
+```
+
+The normaliser for before-and-after render diffs:
+
+```sh
+norm() {
+  sed -E 's/\[sync\]/[pipeline]/; s/\[plan\]/[split]/; s/\[tlpdb\]/[prepare]/; s/\[render\]/[pages]/; s#/work/run#/work/.run#g' "$1" \
+  | grep '^task: \[' | grep -vE '^task: \[(image|run|op|default|report|report-engine|report-mirror)\]'
+}
+diff <(norm /tmp/<mirror>-before.txt) <(norm .run/render.txt)
+```
