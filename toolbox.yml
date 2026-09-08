@@ -78,7 +78,8 @@ tasks:
     run: once
     status: ['{{.ENGINE}} image inspect {{.IMAGE}} >/dev/null 2>&1']
     cmds:
-      - '{{.ENGINE}} pull {{.IMAGE}}'
+      # image pull, not pull: Apple container has no top-level pull, Docker has both.
+      - '{{.ENGINE}} image pull {{.IMAGE}}'
 
   image-build:
     desc: 'Build the toolbox image from a local katoptra/lib checkout: task image-build LIB_DIR=../lib'
