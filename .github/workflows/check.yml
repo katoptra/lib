@@ -10,5 +10,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: katoptra/lib/.github/actions/toolbox@v1
+      # The action is this repository's, pinned to a release commit: a mirror whose Actions
+      # policy requires a full SHA on every uses: rejects a tag here too. Dependabot bumps it.
+      - uses: katoptra/lib/.github/actions/toolbox@a80d19d76766d058e9e10190277525f9d452b21d # v1.0.1
       - run: task check
