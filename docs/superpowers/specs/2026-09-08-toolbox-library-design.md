@@ -52,7 +52,7 @@ includes:
       NAME: ctan
       DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
-      PASS: SEED RECONCILE MAX_BATCHES     # host env names that cross into the container
+      PASS: MIRROR_VERBOSE                 # host env names that cross into the container
 tasks:
   pipeline:      { cmds: [ ... ] }          # required: the full run, inside the image
   plan-pipeline: { cmds: [ ... ] }          # required: the read-only half
@@ -75,7 +75,7 @@ Host side, in `toolbox.yml`:
 | `op -- <cmd>` | `run` wrapped in `op run --env-file=op.env` when `op.env` exists |
 | `sync` | `op -- task pipeline` |
 | `plan` | `op -- task plan-pipeline` |
-| `render` | `run -- task --dry --force pipeline`, saved to `.run/render.txt` |
+| `render` | `task --dry --force pipeline` inside IMAGE, not via `run` so no names cross; saved to `.run/render.txt` |
 | `check` | `render`, then diff against `render.txt` |
 | `render-update` | `render`, then copy over `render.txt` |
 | `clean` | Delete every ignored file |
@@ -102,7 +102,7 @@ reports the locked version.
 
 ## Workflows
 
-`sync.yml` (reusable): input `vars` (a string of `KEY=value` pairs appended to `task sync`),
+`sync.yml` (reusable): input `vars` (a string of `KEY=value` pairs passed after `--` to `task sync`, task vars for the pipeline inside the image),
 secret `OP_SERVICE_ACCOUNT_TOKEN` (optional). Checkout, the toolbox action, `task sync`,
 then always: `task op -- task ping-fail` on failure; then on success: `gh workflow run
 sync.yml` when `.run/chain` exists.
