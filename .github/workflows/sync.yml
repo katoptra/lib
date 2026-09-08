@@ -1,0 +1,44 @@
+# Reusable: one mirror, one run. The caller is a ten-line workflow_dispatch that
+# jshvn/dispatch triggers; it passes `vars` through and inherits its repository secret.
+name: sync
+on:
+  workflow_call:
+    inputs:
+      vars:
+        description: 'KEY=value pairs appended to task sync, e.g. "SEED=true MAX_BATCHES=8"'
+        type: string
+        default: ''
+      timeout-minutes:
+        description: Under the six-hour job limit; every batch checkpoints, so a cut-off costs one batch
+        type: number
+        default: 355
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: false
+permissions:
+  contents: read
+  actions: write   # chain: gh workflow run
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: katoptra/lib/.github/actions/toolbox@v1
+      # df is the host's: the image and the batches share the runner's disk.
+      - run: df -h . && task image
+      - run: task sync ${{ inputs.vars }}
+      - name: Ping /fail unless the job succeeded
+        if: failure()
+        run: task op -- task ping-fail
+      - name: Chain the next run
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f .run/chain ]; then
+            gh workflow run sync.yml --ref "$GITHUB_REF_NAME"
+            echo "chained: next run queued" >> "$GITHUB_STEP_SUMMARY"
+          fi

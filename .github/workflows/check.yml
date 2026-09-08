@@ -1,0 +1,14 @@
+# Reusable: render the mirror's pipeline inside its image and diff it against render.txt.
+name: check
+on:
+  workflow_call: {}
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: katoptra/lib/.github/actions/toolbox@v1
+      - run: task check
