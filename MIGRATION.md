@@ -18,6 +18,62 @@ Read `README.md` first, then this whole file, then start. Phase order matters. W
 a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
 re-run the gate; never skip one.
 
+## Status, 2026-09-09: Phase A done, Phase C at the merge, B, D and E not started
+
+Written for a session with no memory of the one that did A and C. Read this, then the
+corrections section below the phases, then the phase you are about to run.
+
+**Done.**
+
+- lib is released: `v1.0.0` (fc3402d: the engine, the layered report, the example and
+  its fixtures), `v1.0.1` (a80d19d: `image` pulls with `<engine> image pull`), `v1.0.2`
+  (`04f7901cf1aa7551bc43db5ff801a225a189c42a`: the reusable workflows pin their own
+  action). `v1` points at v1.0.2. Both images exist on ghcr.io.
+- ctan is migrated on branch `josh/toolbox`, pull request katoptra/ctan#26, with every
+  local gate green: the render diff against the old pipeline is only the expected
+  `clock`/`list` lines, the fixture checks pass, the compliance block prints
+  `compliant: ctan`. In Actions its `check / check` reaches `task check` and fails only
+  at the image pull, `unauthorized`.
+- The checklist artifact has `p4-engine`, `p4-examples`, `p4-fixtures` and `p4-tag`
+  ticked. jshvn/dispatch is verified: `schedules/ctan.ts` targets `sync.yml` at
+  `42 * * * *`.
+
+**Blocked on the owner: two settings.** The agent's permission classifier refused both.
+Do them by hand, or confirm they are done, before anything below.
+
+1. The GHCR package is private, so no mirror can pull in Actions. There is no API for
+   visibility. In the browser, under
+   https://github.com/orgs/katoptra/packages/container/toolbox/settings, change the
+   visibility to public. Check: an anonymous bearer token from
+   `https://ghcr.io/token?scope=repository:katoptra/toolbox:pull` gets a 200 from
+   `https://ghcr.io/v2/katoptra/toolbox/manifests/rsync-v1`; today it gets 401.
+2. The ctan ruleset, id 21527871, requires a status check named `check`; the reusable
+   workflow reports `check / check`, so nothing can merge until it is renamed:
+   ```sh
+   gh api repos/katoptra/ctan/rulesets/21527871 | jq '{name, target, enforcement, bypass_actors, conditions, rules: (.rules | map(if .type == "required_status_checks" then .parameters.required_status_checks |= map(if .context == "check" then .context = "check / check" else . end) else . end))}' > /tmp/ruleset.json
+   gh api -X PUT repos/katoptra/ctan/rulesets/21527871 --input /tmp/ruleset.json
+   ```
+
+**Next, in order.**
+
+1. Rerun ctan's check and watch it green: `gh run rerun 34288482692 -R katoptra/ctan`,
+   or push an empty commit to `josh/toolbox`. Then C.3.6 as written: merge between :50
+   and :30 UTC, `gh workflow run sync.yml -R katoptra/ctan`, watch, then the :42 run. The
+   summary must show the toolbox's rows, the engine's rows and a `Directory pages` row,
+   and the healthcheck a ping. Rollback is C.3.7. Tick `p5-ctan`.
+2. Phase B (dropbox), then Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning
+   policy as ctan (corrections below); dropbox does not.
+
+**What the previous session left only on Josh's laptop.** Nothing the next one needs.
+For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
+2cd3b98 (`git worktree add /tmp/ctan-old 2cd3b98`, `task image` there, then
+`container run --rm --user $(id -u):$(id -g) -w /work -v "$PWD":/work -e HOME=/tmp
+ctan-sync sh -c 'task --dry --force sync 2>&1'`; the `ctan-sync` image is still on the
+laptop). The local `ghcr.io/katoptra/toolbox:rsync-v1` was built from the lib checkout
+with `task image-build`, not pulled; once the package is public, `task image-clean &&
+task image` in ctan fetches the released one. ctan's untracked `fixtures/run-seed` has
+its committed twin in lib as `examples/rsync/fixtures/run-empty`.
+
 ## The end state, so every decision below has a reference
 
 ```
@@ -193,12 +249,12 @@ gh run watch --exit-status $(gh run list --workflow release.yml --limit 1 --json
 Gate A.3, all of:
 
 - `git ls-remote --tags origin` shows `v1.0.0` and `v1`.
-- From a shell that is not logged in to GHCR: `docker manifest inspect
-  ghcr.io/katoptra/toolbox:rsync-v1` and `proton-v1` succeed. If they ask for
-  credentials the package is private: `gh api -X PATCH
-  /orgs/katoptra/packages/container/toolbox --input - <<< '{"visibility":"public"}'`
-  needs `read:packages` and `write:packages` on the token (`gh auth refresh -s
-  read:packages,write:packages`); or set it in the browser under the package's settings.
+- Anonymously from GHCR: `t=$(curl -s "https://ghcr.io/token?scope=repository:katoptra/toolbox:pull" | jq -r .token)`,
+  then `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t"
+  https://ghcr.io/v2/katoptra/toolbox/manifests/rsync-v1`, and `proton-v1`, answer 200.
+  A 401 means the package is private, which it is after the first push and stays until
+  the owner makes it public in the browser under the package's settings; there is no
+  API for it.
 - In a scratch directory, a Taskfile that includes
   `https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml` and
   `https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml`, flattened, with
@@ -575,8 +631,8 @@ grep -q '^  \(ENGINE\|RUNNER\|PASS_ENV\|RUN\):' Taskfile.yml      && f "toolbox 
 grep -q 'IMAGE:' Taskfile.yml && ! grep -q 'IMAGE: ghcr.io/katoptra/toolbox:' Taskfile.yml && f "IMAGE is not the GHCR image"
 grep -qi 'docker/' README.md CLAUDE.md                  && f "docs still mention docker/"
 grep -qi 'seed' Taskfile.yml                            && f "seed still in Taskfile"
-grep -q 'katoptra/lib/.github/workflows/sync.yml@v1' .github/workflows/sync.yml   || f "sync.yml does not call lib@v1"
-grep -q 'katoptra/lib/.github/workflows/check.yml@v1' .github/workflows/check.yml || f "check.yml does not call lib@v1"
+grep -qE 'katoptra/lib/.github/workflows/sync.yml@(v1|[0-9a-f]{40} # v1)' .github/workflows/sync.yml   || f "sync.yml does not call lib at v1"
+grep -qE 'katoptra/lib/.github/workflows/check.yml@(v1|[0-9a-f]{40} # v1)' .github/workflows/check.yml || f "check.yml does not call lib at v1"
 grep -q 'secrets: inherit' .github/workflows/sync.yml   || f "sync.yml lacks secrets: inherit"
 grep -q 'actions: write' .github/workflows/sync.yml     || f "sync.yml lacks actions: write"
 grep -q 'workflow_dispatch' .github/workflows/sync.yml  || f "sync.yml lacks workflow_dispatch"
@@ -644,6 +700,11 @@ jobs:
     with: {vars: '${{ inputs.vars }}', timeout-minutes: 355}
     secrets: inherit
 ```
+
+On ctan and tlnet, whose Actions policy requires a full commit SHA on every `uses:`, the
+`uses:` line in both callers reads `katoptra/lib/.github/workflows/<x>.yml@<release sha>
+# vX.Y.Z`, today `04f7901cf1aa7551bc43db5ff801a225a189c42a # v1.0.2`, and Dependabot
+bumps it. dropbox uses the templates as written.
 
 `.github/workflows/check.yml`, whole file (dropbox adds the `tests` job):
 
