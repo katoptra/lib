@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: the repo layout every later task writes into.
 
-- [ ] **Step 1: Copy the MIT license from the site repo and write the ignore file**
+- [x] **Step 1: Copy the MIT license from the site repo and write the ignore file**
 
 ```sh
 cd ~/Git/katoptra/lib
@@ -42,7 +42,7 @@ cat > .gitignore <<'EOF'
 EOF
 ```
 
-- [ ] **Step 2: Write dependabot for actions**
+- [x] **Step 2: Write dependabot for actions**
 
 `.github/dependabot.yml`:
 
@@ -58,7 +58,7 @@ updates:
         patterns: ['*']
 ```
 
-- [ ] **Step 3: Write the README stub**
+- [x] **Step 3: Write the README stub**
 
 ```markdown
 # lib
@@ -66,7 +66,7 @@ updates:
 The toolbox every katoptra mirror includes. Finished in Task 8.
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `git add -A && git status --short`
 Expected: four files staged.
@@ -85,7 +85,7 @@ git commit -m "chore: seed the repository"
 **Interfaces:**
 - Produces: tables `task`, `op`, `awscli`, `ubuntu`, `python`, `proton_drive_cli`, `age`, each with `version`, and per-arch tables `linux_amd64` and `linux_arm64` carrying `sha256` or `sha512`. Read by both Dockerfiles (Task 3) and the composite action (Task 5) with the same `lock` helper.
 
-- [ ] **Step 1: Write the lock**
+- [x] **Step 1: Write the lock**
 
 ```toml
 # One lock for the family. Each Dockerfile and the toolbox action read the tables they
@@ -178,12 +178,12 @@ archive = "age-v1.2.1-linux-arm64.tar.gz"
 sha256 = "57fd79a7ece5fe501f351b9dd51a82fbee1ea8db65a8839db17f5c080245e99f"
 ```
 
-- [ ] **Step 2: Verify it parses**
+- [x] **Step 2: Verify it parses**
 
 Run: `python3 -c 'import tomllib; d = tomllib.load(open("toolchain.lock.toml","rb")); print(sorted(d))'`
 Expected: `['age', 'awscli', 'op', 'proton_drive_cli', 'python', 'task', 'ubuntu']`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git add toolchain.lock.toml
@@ -201,7 +201,7 @@ git commit -m "feat(lock): pin every tool the images and the action install"
 - Consumes: `toolchain.lock.toml` (Task 2), copied to `/etc/toolchain.lock.toml` in each image.
 - Produces: images that `toolbox.yml` (Task 4) runs with `-v <repo>:/work -w /work`. Both export `TASK_REMOTE_OFFLINE=1`, `AWS_REGION=auto`, `WORKDIR /work`, and have `task`, `curl` on PATH.
 
-- [ ] **Step 1: Write `docker/rsync.Dockerfile`**
+- [x] **Step 1: Write `docker/rsync.Dockerfile`**
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
@@ -260,7 +260,7 @@ ENV TASK_REMOTE_OFFLINE=1 \
 WORKDIR /work
 ```
 
-- [ ] **Step 2: Write `docker/proton.Dockerfile`**
+- [x] **Step 2: Write `docker/proton.Dockerfile`**
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
@@ -321,7 +321,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /work
 ```
 
-- [ ] **Step 3: Build both images locally on the arm64 laptop**
+- [x] **Step 3: Build both images locally on the arm64 laptop**
 
 Run:
 
@@ -333,12 +333,12 @@ container build -t ghcr.io/katoptra/toolbox:proton-dev -f docker/proton.Dockerfi
 
 Expected: both builds finish; the self-test RUN stages print the tool versions and exit 0. Substitute `docker build` when Docker is the engine.
 
-- [ ] **Step 4: Prove the offline env var is set**
+- [x] **Step 4: Prove the offline env var is set**
 
 Run: `container run --rm ghcr.io/katoptra/toolbox:rsync-dev sh -c 'echo $TASK_REMOTE_OFFLINE $AWS_REGION; task --version'`
 Expected: `1 auto` then `Task version: v3.53.1`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add docker/
@@ -358,7 +358,7 @@ git commit -m "feat(docker): rsync and proton toolbox images from the lock"
 - Consumes: images tagged as `IMAGE` (Task 3).
 - Produces: every verb in the spec's two tables, by exact name. Consumers must define `pipeline` and `plan-pipeline`. Include vars: `NAME`, `DESC`, `IMAGE`, optional `PASS` (space-separated env names), optional `MENU` (extra menu lines), optional `LIB_DIR` (for `image-build`).
 
-- [ ] **Step 1: Write `toolbox.yml`**
+- [x] **Step 1: Write `toolbox.yml`**
 
 ```yaml
 # The toolbox: every verb a katoptra mirror has whatever moves its bytes. A mirror
@@ -385,11 +385,18 @@ vars:
   # names, the mirror's PASS list, and what the Actions job summary needs.
   PASS_ENV:
     sh: |
-      { test -f op.env && grep -v '^#' op.env | sed -n 's/=.*//p'; true; } | sed 's/^/-e /' | tr '\n' ' '
-      for v in {{.PASS}} GITHUB_STEP_SUMMARY GITHUB_RUN_ID HEALTHCHECK_URL; do printf -- '-e %s ' "$v"; done
+      { test -f {{.ROOT_DIR}}/op.env && grep -v '^#' {{.ROOT_DIR}}/op.env | sed -n 's/=.*//p'; true; } | sed 's/^/-e /' | tr '\n' ' '
+      for v in {{.PASS}} GITHUB_STEP_SUMMARY GITHUB_RUN_ID HEALTHCHECK_URL; do printf '%s %s ' -e "$v"; done
   # The image variant is the tag up to its version: ghcr.io/katoptra/toolbox:rsync-v1 -> rsync.
   VARIANT:
-    sh: echo "{{.IMAGE}}" | sed 's/.*://; s/-v[0-9].*//'
+    sh: echo "{{.IMAGE}}" | sed 's/.*://; s/-v[0-9].*//; s/-dev$//'
+  # The repository's top level rides in at /work and the Taskfile's directory is the
+  # working directory. For a mirror the two are the same; for the examples in
+  # katoptra/lib the include one level up must be reachable.
+  TOP:
+    sh: git -C {{.ROOT_DIR}} rev-parse --show-toplevel 2>/dev/null || echo {{.ROOT_DIR}}
+  PREFIX:
+    sh: git -C {{.ROOT_DIR}} rev-parse --show-prefix 2>/dev/null || true
 
 tasks:
   default:
@@ -452,7 +459,7 @@ tasks:
       - >-
         {{.ENGINE}} run --rm
         --user $(id -u):$(id -g)
-        -v "{{.ROOT_DIR}}":/work -w /work
+        -v "{{.TOP}}":/work -w /work/{{.PREFIX}}
         ${GITHUB_STEP_SUMMARY:+-v "$GITHUB_STEP_SUMMARY":"$GITHUB_STEP_SUMMARY"}
         -e HOME=/tmp {{.PASS_ENV}}
         {{.IMAGE}} {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}
@@ -488,19 +495,21 @@ tasks:
     desc: Render every command of the pipeline inside the toolbox, run none, save to .run/render.txt
     deps: [image]
     # Not via `run`: the output is the artifact, so it is captured, not streamed, and a
-    # dry run needs no secrets, so no names cross into the container.
+    # dry run needs no secrets, so no names cross into the container. task writes the
+    # rendered commands to stderr; the redirect inside the container folds them into
+    # stdout, so the engine's own progress lines on the host's stderr stay out of the file.
     cmds:
       - mkdir -p {{.RUN}}
       - >-
-        {{.ENGINE}} run --rm --user $(id -u):$(id -g) -v "{{.ROOT_DIR}}":/work -w /work
-        -e HOME=/tmp {{.IMAGE}} task --dry --force pipeline > {{.RUN}}/render.txt 2>&1
+        {{.ENGINE}} run --rm --user $(id -u):$(id -g) -v "{{.TOP}}":/work -w /work/{{.PREFIX}}
+        -e HOME=/tmp {{.IMAGE}} sh -c 'task --dry --force pipeline 2>&1' > {{.RUN}}/render.txt
       - cat {{.RUN}}/render.txt
 
   check:
     desc: render, then diff against the committed render.txt
     cmds:
       - task: render
-      - diff -u render.txt {{.RUN}}/render.txt && echo "check: render matches render.txt"
+      - 'diff -u render.txt {{.RUN}}/render.txt && echo "check: render matches render.txt"'
 
   render-update:
     desc: render, then accept it as render.txt
@@ -525,7 +534,7 @@ tasks:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail"
 ```
 
-- [ ] **Step 2: Write the rsync example**
+- [x] **Step 2: Write the rsync example**
 
 `examples/rsync/Taskfile.yml`:
 
@@ -590,7 +599,7 @@ AWS_ENDPOINT_URL=op://VAULT/r2/endpoint
 HEALTHCHECK_URL=op://VAULT/healthcheck/url
 ```
 
-- [ ] **Step 3: Write the proton example**
+- [x] **Step 3: Write the proton example**
 
 `examples/proton/Taskfile.yml`:
 
@@ -633,7 +642,7 @@ tasks:
 
 `examples/proton/.taskrc.yml` and `examples/proton/op.env`: the same two files as the rsync example.
 
-- [ ] **Step 4: Render and accept both examples**
+- [x] **Step 4: Render and accept both examples**
 
 Run:
 
@@ -644,7 +653,7 @@ cd ~/Git/katoptra/lib/examples/proton && task render-update && cat render.txt
 
 Expected: each `render.txt` lists every command of `pipeline` as `task: [verb] command` lines with `/work/.run` paths, and no line from `image` or `run` themselves. The rsync one names `rsync --list-only rsync://rsync.example.org/pub/`.
 
-- [ ] **Step 5: Run the tools verb for real in each image**
+- [x] **Step 5: Run the tools verb for real in each image**
 
 Run:
 
@@ -655,17 +664,17 @@ cd ~/Git/katoptra/lib/examples/proton && task run -- task tools
 
 Expected: version lines from every tool; exit 0. This is the image's runtime check and the `run` verb's plumbing check in one.
 
-- [ ] **Step 6: Prove check catches a change**
+- [x] **Step 6: Prove check catches a change**
 
 Run: `cd ~/Git/katoptra/lib/examples/rsync && sed -i '' 's|rsync.example.org|changed.example.org|' Taskfile.yml && task check; git checkout Taskfile.yml`
 Expected: `task check` exits nonzero with a unified diff whose changed line is the `list` command.
 
-- [ ] **Step 7: Prove the trust rule and the offline rule**
+- [x] **Step 7: Prove the trust rule and the offline rule**
 
 Run: `cd ~/Git/katoptra/lib/examples/rsync && task run -- sh -c 'echo $TASK_REMOTE_OFFLINE'`
 Expected: `1`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```sh
 git add toolbox.yml examples/
@@ -683,7 +692,7 @@ git commit -m "feat(toolbox): the shared verbs, with an example consumer per ima
 - Consumes: `toolchain.lock.toml` at `${{ github.action_path }}/../../../toolchain.lock.toml`, which is where GitHub checks the action's repository out.
 - Produces: `task` and `op` on the runner PATH at the lock's versions. Used by Tasks 6 and 7.
 
-- [ ] **Step 1: Write the action**
+- [x] **Step 1: Write the action**
 
 ```yaml
 name: toolbox
@@ -707,12 +716,12 @@ runs:
         task --version && op --version
 ```
 
-- [ ] **Step 2: Verify the lock path logic locally**
+- [x] **Step 2: Verify the lock path logic locally**
 
 Run: `cd ~/Git/katoptra/lib && LOCK=.github/actions/toolbox/../../../toolchain.lock.toml python3 -c 'import os,tomllib; print(tomllib.load(open(os.environ["LOCK"],"rb"))["task"]["version"])'`
 Expected: `3.53.1`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git add .github/actions/toolbox/action.yml
@@ -730,7 +739,7 @@ git commit -m "feat(action): install task and op at the lock's versions"
 - Consumes: the toolbox action (Task 5) at the same ref as the workflow, via `uses: katoptra/lib/.github/actions/toolbox@v1`. Inside this repository's own CI the path form `./.github/actions/toolbox` is used instead.
 - Produces: `workflow_call` workflows a mirror calls with `uses: katoptra/lib/.github/workflows/sync.yml@v1`.
 
-- [ ] **Step 1: Write `sync.yml`**
+- [x] **Step 1: Write `sync.yml`**
 
 ```yaml
 # Reusable: one mirror, one run. The caller is a ten-line workflow_dispatch that
@@ -777,7 +786,7 @@ jobs:
           fi
 ```
 
-- [ ] **Step 2: Write `check.yml`**
+- [x] **Step 2: Write `check.yml`**
 
 ```yaml
 # Reusable: render the mirror's pipeline inside its image and diff it against render.txt.
@@ -796,12 +805,12 @@ jobs:
       - run: task check
 ```
 
-- [ ] **Step 3: Verify both parse**
+- [x] **Step 3: Verify both parse**
 
 Run: `for f in .github/workflows/sync.yml .github/workflows/check.yml; do ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "ok #{ARGV[0]}"' "$f"; done`
 Expected: `ok` for both. macOS ships ruby; GitHub validates the schema on push.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git add .github/workflows/sync.yml .github/workflows/check.yml
@@ -819,7 +828,7 @@ git commit -m "feat(workflows): reusable sync and check for every mirror"
 - Consumes: the examples (Task 4), the Dockerfiles (Task 3), the action (Task 5) by path.
 - Produces: images at `ghcr.io/katoptra/toolbox:<variant>-<tag>` and `<variant>-v<major>`, and a moved `v<major>` git tag, on every `v*.*.*` tag push.
 
-- [ ] **Step 1: Write `ci.yml`**
+- [x] **Step 1: Write `ci.yml`**
 
 ```yaml
 name: ci
@@ -849,7 +858,7 @@ jobs:
         run: task check
 ```
 
-- [ ] **Step 2: Write `release.yml`**
+- [x] **Step 2: Write `release.yml`**
 
 ```yaml
 # On a semver tag: build each image for amd64 and arm64, push both tags, move the
@@ -871,9 +880,9 @@ jobs:
         variant: [rsync, proton]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -884,7 +893,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"; major="${tag%%.*}"
           echo "semver=ghcr.io/katoptra/toolbox:${{ matrix.variant }}-${tag}" >> "$GITHUB_OUTPUT"
           echo "major=ghcr.io/katoptra/toolbox:${{ matrix.variant }}-${major}" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: docker/${{ matrix.variant }}.Dockerfile
@@ -905,9 +914,9 @@ jobs:
           git push -f origin "refs/tags/$major"
 ```
 
-The docker action SHAs above must be verified against each action's releases page before the first push. Dependabot keeps them current afterwards.
+The docker action SHAs above were resolved from each action's latest release tag on 2026-09-08 with `git ls-remote`. Dependabot keeps them current afterwards.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git add .github/workflows/ci.yml .github/workflows/release.yml
@@ -926,7 +935,7 @@ git commit -m "ci: build and check the examples; release images and the major ta
 - Consumes: everything above.
 - Produces: the documentation a mirror author reads to consume the library, in the org's README format (badges, How it works, Working on it, Want your own?, Pull requests are welcome, MIT line).
 
-- [ ] **Step 1: Write `README.md`**
+- [x] **Step 1: Write `README.md`**
 
 ```markdown
 # lib
@@ -1035,7 +1044,7 @@ Pull requests are welcome.
 MIT licensed. Built by [Josh Vaughen](https://ijosh.com).
 ```
 
-- [ ] **Step 2: Write `CONTRIBUTING.md`**
+- [x] **Step 2: Write `CONTRIBUTING.md`**
 
 ```markdown
 # Contributing
@@ -1062,7 +1071,7 @@ cd examples/proton && task image-build && task run -- task tools && task check
 CI runs the same three commands per image on every pull request.
 ```
 
-- [ ] **Step 3: Write `CLAUDE.md`**
+- [x] **Step 3: Write `CLAUDE.md`**
 
 ```markdown
 # lib
@@ -1093,7 +1102,7 @@ cd examples/proton && task image-build && task run -- task tools && task check
 A verb change updates both `render.txt` files via `task render-update`.
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git add README.md CONTRIBUTING.md CLAUDE.md
@@ -1107,7 +1116,7 @@ git commit -m "docs: the contract, how to work on it, how to release"
 Not automated. After the plan is executed locally:
 
 1. `gh repo create katoptra/lib --public --source ~/Git/katoptra/lib --push` with the description "The toolbox every katoptra mirror includes: verbs, images, workflows".
-2. Verify the three docker action SHAs in `release.yml` against their releases pages.
+2. Confirm the org allows workflows to write packages (Settings, Packages) so `release.yml` can push to GHCR.
 3. Push, watch `ci` pass, then `git tag v1.0.0 && git push origin v1.0.0` and watch `release` publish `ghcr.io/katoptra/toolbox:rsync-v1` and `proton-v1`, and move `v1`.
 4. Make the two packages public in the org's package settings, or runs cannot pull them.
 5. Then one migration plan per mirror, tlnet first because it is smallest.
