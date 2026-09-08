@@ -1,0 +1,21 @@
+name: toolbox
+description: Install go-task and the 1Password CLI at the versions in katoptra/lib's toolchain.lock.toml
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        # GitHub checks the action's repository out beside the workflow, so the lock at
+        # the repository root is three levels up from this file.
+        LOCK: ${{ github.action_path }}/../../../toolchain.lock.toml
+      run: |
+        set -eu
+        lock() { python3 -c 'import functools,sys,tomllib; x=tomllib.load(open(sys.argv[2],"rb")); print(functools.reduce(lambda d,k: d[k], sys.argv[1].split("."), x))' "$1" "$LOCK"; }
+        arch="$(dpkg --print-architecture)"
+        curl -fsSL "$(lock task.base_url)/$(lock task.linux_${arch}.archive)" -o /tmp/task.tgz
+        echo "$(lock task.linux_${arch}.sha256)  /tmp/task.tgz" | sha256sum -c -
+        sudo tar -xzf /tmp/task.tgz -C /usr/local/bin task
+        curl -fsSL "$(lock op.base_url)/$(lock op.linux_${arch}.archive)" -o /tmp/op.zip
+        echo "$(lock op.linux_${arch}.sha256)  /tmp/op.zip" | sha256sum -c -
+        sudo unzip -q -o /tmp/op.zip op -d /usr/local/bin
+        task --version && op --version
