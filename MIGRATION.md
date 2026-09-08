@@ -474,6 +474,36 @@ implicitly with `stale`.
 - **Every mirror** passes the compliance block below.
 - **Memory**: the migration-state memory file records the outcome and the date.
 
+## Corrections from Phase A and Phase C, read before B and D
+
+- **A command-line `KEY=value` does not reach an include's verb past a var the include or
+  the mirror's root defines.** Verified on go-task 3.53.1: for a verb defined in an
+  included file, the include's own vars (`RUN`, `STAGING`, `S3`...) and the mirror's root
+  literals (`BUCKET`, `BATCH_GB`...) both beat the command line; only a call-site var
+  (`{task: diff, vars: {RUN: ...}}`) beats them. So `task sync -- MAX_BATCHES=8` works
+  only because `MAX_BATCHES` has no `vars:` entry anywhere, `task run -- task diff
+  RUN=/work/fixtures/x` leaves an engine verb on `.run/`, and the scratch gates written as
+  `task pipeline BUCKET=<scratch> BATCH_GB=1` would run against the real bucket. A scratch
+  run edits the Taskfile. A mirror's own verbs (`pages`, `smoke` in ctan) do take the
+  command line.
+- **A root var cannot read an include's var unless the root defines the name first.**
+  Vars are an ordered map; the include's `RUN` lands after the root's `SLASH`, so
+  `SLASH: '{{.RUN}}/slash'` rendered as `/slash`. ctan spells out `{{.ROOT_DIR}}/.run/slash`.
+- **`status:` entries must all succeed to skip a verb.** The `TL_KEY` guard on `prepare`
+  is one entry joined with `||` to ctan's own, not a second entry.
+- **`silent: true` renders nothing under `--dry`.** `report`, `report-engine` and
+  `report-mirror` never appear in `render.txt`; the A.1 gate's "new lines" do not exist.
+- **`aws s3api help` needs groff**, which the image does not ship (nor did ctan's). Gate
+  C.3.3 is the dead-port call: `aws s3api list-buckets --no-sign-request --endpoint-url
+  http://127.0.0.1:1`, expecting a connection error.
+- **Apple container has no top-level `pull`.** `image` is `<engine> image pull` (v1.0.1).
+- **GHCR has no REST endpoint for package visibility.** The `gh api -X PATCH` line does
+  nothing; the package is made public in the browser, once, before any mirror can pull.
+- **The reusable `check` reports as `check / check`**, so the ruleset edit is required
+  before the first PR can merge, as written; it is one `PUT` of the ruleset body.
+- ctan's `fixtures/` are git-excluded, so "move" meant copying the engine-relevant subset
+  into lib as committed files; ctan's own stay on the laptop, untracked.
+
 ## Footguns
 
 - **`task sync KEY=value` sets a host var and does nothing inside.** It is `task sync --
