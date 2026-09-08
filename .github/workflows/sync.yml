@@ -5,7 +5,7 @@ on:
   workflow_call:
     inputs:
       vars:
-        description: 'KEY=value pairs appended to task sync, e.g. "SEED=true MAX_BATCHES=8"'
+        description: 'KEY=value pairs for the pipeline inside the image, e.g. "RECONCILE=true MAX_BATCHES=8"'
         type: string
         default: ''
       timeout-minutes:
@@ -29,7 +29,7 @@ jobs:
       - uses: katoptra/lib/.github/actions/toolbox@v1
       # df is the host's: the image and the batches share the runner's disk.
       - run: df -h . && task image
-      - run: task sync ${{ inputs.vars }}
+      - run: task sync -- ${{ inputs.vars }}
       - name: Ping /fail unless the job succeeded
         if: failure()
         run: task op -- task ping-fail

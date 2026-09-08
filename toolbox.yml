@@ -49,8 +49,8 @@ tasks:
           "${b}{{.NAME}}${r}   ${d}{{.DESC}}${r}" \
           "" \
           "${c}pipeline -- needs the vault (op.env) or the secrets in your environment${r}" \
-          "  task sync                 One run: task pipeline inside the toolbox" \
-          "  task plan                 The read-only half: task plan-pipeline inside the toolbox" \
+          "  task sync -- [K=v ...]    One run: task pipeline inside the toolbox, with these vars" \
+          "  task plan -- [K=v ...]    The read-only half: task plan-pipeline inside the toolbox" \
           "" \
           "${c}checks -- offline, no credentials${r}" \
           "  task check                Render every command of the pipeline and diff it against render.txt" \
@@ -103,11 +103,15 @@ tasks:
 
   op:
     desc: 'Run a command inside the toolbox with secrets from 1Password: task op -- task pipeline'
+    vars:
+      # ARGS from sync and plan; the words after -- by hand. Each re-quoted, so
+      # task op -- sh -c 'a; b' arrives intact.
+      CMD: '{{if .ARGS}}{{.ARGS}}{{else}}{{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}{{end}}'
     cmds:
       # No op.env means the secrets are already in the environment (GitHub secrets, say).
       - |
-        if test -f op.env; then op run --env-file=op.env -- task run -- {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}
-        else task run -- {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}; fi
+        if test -f op.env; then op run --env-file=op.env -- task run -- {{.CMD}}
+        else task run -- {{.CMD}}; fi
 
   clean:
     desc: Delete every file git ignores
@@ -115,17 +119,19 @@ tasks:
       - git clean -fdX
 
   # ---- pipeline ----
+  # The words after -- are task vars for the pipeline inside the image: task sync --
+  # MAX_BATCHES=8 RECONCILE=true. A KEY=value before -- would set a host-side var only.
   sync:
-    desc: One run, inside the toolbox
+    desc: 'One run, inside the toolbox: task sync -- MAX_BATCHES=8'
     cmds:
       - task: op
-        vars: {CLI_ARGS: task pipeline}
+        vars: {ARGS: 'task pipeline {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}'}
 
   plan:
-    desc: The read-only half, inside the toolbox
+    desc: 'The read-only half, inside the toolbox: task plan -- RECONCILE=true'
     cmds:
       - task: op
-        vars: {CLI_ARGS: task plan-pipeline}
+        vars: {ARGS: 'task plan-pipeline {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}'}
 
   # ---- checks ----
   render:

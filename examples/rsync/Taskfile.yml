@@ -14,7 +14,6 @@ includes:
       DESC: the rsync toolbox, exercised
       IMAGE: ghcr.io/katoptra/toolbox:rsync-dev
       LIB_DIR: ../..
-      PASS: SEED MAX_BATCHES
 tasks:
   pipeline:
     cmds:
