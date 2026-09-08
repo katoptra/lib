@@ -6,7 +6,12 @@
 #
 # Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
 # the mirror's value; defaults go inline), and host-side and in-container verbs share
-# one namespace, so the names below are reserved.
+# one namespace, so the names below are reserved, and so is the engine vocabulary a
+# second include adds beside them: list, normalise, state, rebuild, diff, split,
+# batches, batch, fetch, publish, merge, checkpoint, remove, delete, reconcile, retry,
+# and the hooks prepare, verify, index, smoke and report-engine. report-engine lives
+# here as a no-op and in every engine, so an engine consumer's toolbox include lists it
+# under excludes:.
 version: '3'
 
 vars:
@@ -121,13 +126,13 @@ tasks:
   # ---- pipeline ----
   # The words after -- are task vars for the pipeline inside the image: task sync --
   # MAX_BATCHES=8 RECONCILE=true. A KEY=value before -- would set a host-side var only.
-  # The fail ping happens inside the same container, so 1Password is read once per run
-  # whatever the outcome; a second op run for the ping would be a second read.
+  # The report and the fail ping happen inside the same container, so 1Password is read
+  # once per run whatever the outcome; a second op run for the ping would be a second read.
   sync:
     desc: 'One run, inside the toolbox: task sync -- MAX_BATCHES=8'
     cmds:
       - task: op
-        vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task ping-fail; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
+        vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task report STATUS=failed || true; task ping-fail; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
 
   plan:
     desc: 'The read-only half, inside the toolbox: task plan -- RECONCILE=true'
@@ -164,9 +169,11 @@ tasks:
 
   # ---- inside the toolbox ----
   clock:
-    desc: Record the run's start as "epoch UTC-hour weekday" in .run/start.txt
+    desc: Record the run's start as "epoch UTC-hour weekday" in .run/start.txt, and forget the last run's chain file
+    # An engine's batches writes the chain file when work remains, and the workflow
+    # queues the next run on it; a run that works no batches must not inherit one.
     cmds:
-      - mkdir -p {{.RUN}} && date -u '+%s %H %u' > {{.RUN}}/start.txt
+      - mkdir -p {{.RUN}} && rm -f {{.RUN}}/chain && date -u '+%s %H %u' > {{.RUN}}/start.txt
 
   ping:
     desc: Dead man's switch; healthchecks.io emails when its grace passes without this (skipped if HEALTHCHECK_URL is unset)
@@ -177,3 +184,26 @@ tasks:
     desc: Tell healthchecks.io the run failed (skipped if HEALTHCHECK_URL is unset)
     cmds:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail"
+
+  # One table, three layers: the rows below, then the engine's, then the mirror's, each
+  # a "| Label | value |" line appended to the same file. Every row tolerates a missing
+  # file, because the report also runs after a failed pipeline.
+  report:
+    desc: Append the run summary to the Actions job page (stdout elsewhere), base rows then the engine's then the mirror's
+    silent: true
+    cmds:
+      - |
+        s=$(cut -d' ' -f1 {{.RUN}}/start.txt 2>/dev/null || date +%s); now=$(date +%s)
+        cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+        ## {{.NAME}}: run {{.STATUS | default "succeeded"}}, $(date -u '+%Y-%m-%d %H:%M UTC')
+
+        | | |
+        |---|---|
+        | Started | $(date -u -d "@$s" '+%H:%M UTC' 2>/dev/null || date -u -r "$s" '+%H:%M UTC'), took $(( (now - s) / 60 )) min |
+        | Image | {{.IMAGE}} |
+        | Next run | $(test -f {{.RUN}}/chain && echo "queued now, work remains" || echo "at the schedule") |
+        EOF
+      - {task: report-engine}
+      - {task: report-mirror}
+  report-engine: {cmds: []}   # the engine's rows; an engine include replaces it
+  report-mirror: {cmds: []}   # the mirror's rows; a mirror replaces it

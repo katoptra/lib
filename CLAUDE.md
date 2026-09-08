@@ -10,7 +10,13 @@ mirror moves onto it.
   inline. This is a go-task fact, verified: a library `vars:` default shadows the
   mirror's root value.
 - Verb names are reserved across host and container. `plan` is the host-side read-only
-  run; an engine's batch planner is `split`.
+  run; an engine's batch planner is `split`. The hooks, `prepare`, `verify`, `index`,
+  `smoke`, `report-engine` in the engine and `report-mirror` in the toolbox, are the
+  only verbs a mirror redefines, each excluded on the include that defines it.
+  `report-engine` exists in both files, so an engine consumer excludes it on the
+  toolbox include.
+- A mirror's root var shadows a command-line `KEY=value` inside an included verb, so an
+  engine tunable is an inline default and never a root var of the example.
 - Every tool in an image comes from `toolchain.lock.toml` with a checksum. The AWS CLI
   zip is the marked exception.
 - Images set `TASK_REMOTE_OFFLINE=1`. Inside a run the include resolves from the
@@ -27,8 +33,9 @@ mirror moves onto it.
 ## Verifying a change
 
 ```sh
-cd examples/rsync  && task image-build && task run -- task tools && task check
+cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
 cd examples/proton && task image-build && task run -- task tools && task check
 ```
 
-A verb change updates both `render.txt` files via `task render-update`.
+A verb change updates the `render.txt` files via `task render-update`; `offline` is
+the engine's own check over `examples/rsync/fixtures/`.

@@ -15,6 +15,7 @@ tasks:
     cmds:
       - {task: clock}
       - {task: tools}
+      - {task: report}
       - {task: ping}
   plan-pipeline:
     cmds:

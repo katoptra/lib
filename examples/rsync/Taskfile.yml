@@ -1,31 +1,54 @@
-# A consumer of the toolbox with the rsync image. Inside this repo the include is a
-# path; a mirror includes https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml.
+# A consumer of the toolbox and the rsync engine, with the rsync image. Inside this repo
+# the includes are paths; a mirror includes
+# https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml and
+# https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml. The pipeline is
+# the engine's vocabulary in order; render.txt, every command of it, is the library's
+# own check of the engine, and `task run -- task offline` runs the verbs that need no
+# bucket over fixtures/.
 version: '3'
 vars:
   SOURCE: rsync://rsync.example.org/pub/
   BUCKET: example
   HOST: example.ijosh.com
+  LIST_FLOOR: 1
 includes:
   toolbox:
     taskfile: ../../toolbox.yml
     flatten: true
+    excludes: [report-engine]   # the engine's
     vars:
       NAME: example-rsync
-      DESC: the rsync toolbox, exercised
+      DESC: the rsync toolbox and engine, exercised
       IMAGE: ghcr.io/katoptra/toolbox:rsync-dev
       LIB_DIR: ../..
+      MENU: '"" "${c}engine -- offline, inside the image${r}" "  task run -- task offline  Every verb that needs no bucket, over fixtures/"'
+  rsync:
+    taskfile: ../../engines/rsync.yml
+    flatten: true
 tasks:
   pipeline:
     cmds:
       - {task: clock}
-      - {task: tools}
       - {task: list}
+      - {task: state}
+      - {task: rebuild}
+      - {task: diff}
+      - {task: split}
+      - {task: prepare}
+      - {task: batches}
+      - {task: delete}
+      - {task: reconcile}
+      - {task: index}
+      - {task: smoke}
+      - {task: report}
       - {task: ping}
   plan-pipeline:
     cmds:
       - {task: clock}
-      - {task: tools}
       - {task: list}
+      - {task: state}
+      - {task: diff}
+      - {task: split}
   tools:
     desc: Every tool the rsync image promises, by version
     cmds:
@@ -34,6 +57,31 @@ tasks:
       - gpgv --version | head -1
       - xz --version | head -1
       - shasum --version
-  list:
+  offline:
+    desc: Every engine verb that needs no bucket, over fixtures/ copied under .run, inside the image
+    vars:
+      F: '{{.RUN}}/fixtures'
     cmds:
-      - rsync --list-only {{.SOURCE}} > {{.RUN}}/listing.txt
+      # list and normalise over a local tree: its two regular files, byte-sorted, and no directory.
+      - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
+      - test "$(cut -f1 {{.RUN}}/upstream.txt | tr '\n' ' ')" = "a/b/f.txt timestamp "
+      # The verbs write beside what they read, so they work on a copy.
+      - rm -rf {{.F}} && cp -R {{.ROOT_DIR}}/fixtures {{.F}}
+      # run-root: the hour in which one bucket-root file changed. diff finds it, merge takes it
+      # from staging into the state, and split makes it the one batch, the decision batch.
+      - {task: diff, vars: {RUN: '{{.F}}/run-root'}}
+      - test "$(cut -f1 {{.F}}/run-root/changed.txt)" = timestamp && test ! -s {{.F}}/run-root/deleted.txt
+      - {task: merge, vars: {RUN: '{{.F}}/run-root', STAGING: '{{.F}}/run-root/staging', B: '{{.F}}/run-root/changed.txt'}}
+      - cmp {{.F}}/run-root/applied.new {{.F}}/run-root/upstream.txt
+      - {task: split, vars: {RUN: '{{.F}}/run-root', STAGING: '{{.F}}/staging'}}
+      - test "$(ls {{.F}}/run-root/batch-*.txt | wc -l)" -eq 1 && cmp {{.F}}/run-root/batch-0001.txt {{.F}}/run-root/changed.txt
+      # run-empty: the batch names a file that vanished upstream before fetch, so staging never
+      # received it; merge drops it, and the state never names a key the bucket lacks.
+      - {task: diff, vars: {RUN: '{{.F}}/run-empty'}}
+      - {task: merge, vars: {RUN: '{{.F}}/run-empty', STAGING: '{{.F}}/run-empty/staging', B: '{{.F}}/run-empty/changed.txt'}}
+      - cmp {{.F}}/run-empty/applied.new {{.F}}/run-empty/applied.txt
+      # retry: 24 is a success, a transport code is retried five times, anything else is final.
+      - task retry CMD='exit 24' RETRY_BASE=0
+      - '! task retry CMD=''exit 5'' RETRY_BASE=0 2>/dev/null'
+      - '! task retry CMD=''exit 3'' RETRY_BASE=0 2>/dev/null'
+      - 'echo "offline: every check passed"'
