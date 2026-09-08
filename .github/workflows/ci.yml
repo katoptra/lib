@@ -1,0 +1,25 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        variant: [rsync, proton]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolbox
+      - name: Build the image the example names
+        run: docker build -t ghcr.io/katoptra/toolbox:${{ matrix.variant }}-dev -f docker/${{ matrix.variant }}.Dockerfile .
+      - name: The example's tools resolve inside the image
+        working-directory: examples/${{ matrix.variant }}
+        run: task run -- task tools
+      - name: The example's render matches its render.txt
+        working-directory: examples/${{ matrix.variant }}
+        run: task check
