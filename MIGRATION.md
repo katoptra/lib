@@ -34,8 +34,9 @@ corrections section below the phases, then the phase you are about to run.
   only the expected `clock`/`list` lines, the fixture checks, the compliance block,
   `check / check`). The first hand-started run, 34289653678, was green in two minutes:
   the image pulled from GHCR, the state found, 512,046 objects at 140.08 GB, one batch,
-  every smoke check passed, the ping sent, nothing chained. The 23:42 dispatch is the
-  first scheduled run; the end-state table wants three of them.
+  every smoke check passed, the ping sent, nothing chained. The 23:42 dispatch, run
+  34291864433, was green too, in three minutes; the end-state table wants three of them.
+  `p5-ctan` is ticked in the checklist.
 - The GHCR package is public and the ctan ruleset requires `check / check`; the owner
   did both by hand on 2026-09-08.
 - The checklist artifact has `p4-engine`, `p4-examples`, `p4-fixtures` and `p4-tag`
@@ -44,9 +45,9 @@ corrections section below the phases, then the phase you are about to run.
 
 **Next, in order.**
 
-1. Confirm ctan's scheduled runs stay green (`gh run list -R katoptra/ctan --workflow
-   sync.yml`) and read one summary in the browser: the toolbox's rows, the engine's rows,
-   a `Directory pages` row. Tick `p5-ctan` in the checklist artifact. Rollback is C.3.7.
+1. Confirm ctan's next scheduled runs stay green (`gh run list -R katoptra/ctan
+   --workflow sync.yml`) and read one summary in the browser: the toolbox's rows, the
+   engine's rows, a `Directory pages` row. Rollback is C.3.7.
 2. Phase B (dropbox), then Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning
    policy as ctan (corrections below); dropbox does not. The two settings ctan needed,
    a public package and a `check / check` ruleset, are per package and per repository:
