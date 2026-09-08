@@ -121,11 +121,13 @@ tasks:
   # ---- pipeline ----
   # The words after -- are task vars for the pipeline inside the image: task sync --
   # MAX_BATCHES=8 RECONCILE=true. A KEY=value before -- would set a host-side var only.
+  # The fail ping happens inside the same container, so 1Password is read once per run
+  # whatever the outcome; a second op run for the ping would be a second read.
   sync:
     desc: 'One run, inside the toolbox: task sync -- MAX_BATCHES=8'
     cmds:
       - task: op
-        vars: {ARGS: 'task pipeline {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}'}
+        vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task ping-fail; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
 
   plan:
     desc: 'The read-only half, inside the toolbox: task plan -- RECONCILE=true'

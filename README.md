@@ -61,7 +61,7 @@ sequenceDiagram
   C->>C: engine verbs: list, diff, split, fetch, publish ...
   C->>C: ping
   alt pipeline failed
-    W->>C: task op -- task ping-fail
+    C->>C: ping-fail
   else .run/chain exists
     W->>D: gh workflow run sync.yml
   end
@@ -72,9 +72,12 @@ Three things the diagram hides:
 - **Secrets cross by name, never by value.** `op run` resolves `op.env` on the host and
   exports the values; `run` passes `-e NAME` for each name in `op.env` and in `PASS`,
   plus `HEALTHCHECK_URL`, `GITHUB_STEP_SUMMARY` and `GITHUB_RUN_ID` always, so no value
-  ever appears on a command line or in a log. Without an `op.env`, whatever the host
-  environment already holds crosses instead; the reusable sync workflow exports only
-  `OP_SERVICE_ACCOUNT_TOKEN`, so a mirror that calls it needs an `op.env`.
+  ever appears on a command line or in a log.
+- **1Password is read once per run.** One `op run` wraps the whole pipeline, and the
+  fail ping runs inside the same container, so a failed run costs no second read. A
+  mirror without an `op.env` runs on its repository secrets: the reusable workflow
+  exports every inherited secret into the sync step's environment by name, and the ones
+  the mirror lists in `PASS` cross into the container.
 - **Nothing inside the container reaches the network for task itself.** The image sets
   `TASK_REMOTE_OFFLINE=1` and the mirror's `.task/remote` cache rides in with the repo.
 - **`plan` is `sync` with the read-only half.** It runs `plan-pipeline` instead of
@@ -98,7 +101,7 @@ Three things the diagram hides:
 | `PASS` | include var | Host environment names that cross into the container beside the ones in `op.env`, for a pipeline that reads its environment. Task vars are not environment: they go after `--`, as `task sync -- MAX_BATCHES=8`. |
 | `MENU` | include var | Extra lines for the menu, one per mirror-specific verb. |
 | `LIB_DIR` | include var | Where `image-build` finds `docker/`; defaults to `../lib`. |
-| `op.env` | file | `op://` references, one per secret. Absent means the environment is already resolved. |
+| `op.env` | file | `op://` references, one per secret. Absent means the environment is already resolved: on a laptop, whatever is exported; in Actions, the repository's secrets, crossing by the names in `PASS`. |
 | `excludes:` | include key | Library verbs the mirror replaces. See below. |
 
 ### What the toolbox provides

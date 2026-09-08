@@ -1,5 +1,9 @@
 # Reusable: one mirror, one run. The caller is a ten-line workflow_dispatch that
-# jshvn/dispatch triggers; it passes `vars` through and inherits its repository secret.
+# jshvn/dispatch triggers; it passes `vars` through and inherits its repository secrets.
+# 1Password is read once per run: one `op run` resolves op.env around the whole pipeline,
+# fail ping included. A mirror without an op.env runs on its repository secrets instead,
+# exported into the sync step's environment and crossing into the container by the names
+# its PASS var lists.
 name: sync
 on:
   workflow_call:
@@ -29,10 +33,15 @@ jobs:
       - uses: katoptra/lib/.github/actions/toolbox@v1
       # df is the host's: the image and the batches share the runner's disk.
       - run: df -h . && task image
-      - run: task sync -- ${{ inputs.vars }}
-      - name: Ping /fail unless the job succeeded
-        if: failure()
-        run: task op -- task ping-fail
+      - name: task sync
+        env:
+          SECRETS: ${{ toJSON(secrets) }}
+        # Every inherited secret becomes an environment variable of this step, by name, in
+        # memory: no file, no command line, and GitHub masks the values in the log. With an
+        # op.env the pipeline reads 1Password and these are unused.
+        run: |
+          eval "$(printf '%s' "$SECRETS" | jq -r 'to_entries[] | "export \(.key)=\(.value | @sh)"')"
+          task sync -- ${{ inputs.vars }}
       - name: Chain the next run
         if: success()
         env:
