@@ -18,7 +18,7 @@ Read `README.md` first, then this whole file, then start. Phase order matters. W
 a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
 re-run the gate; never skip one.
 
-## Status, 2026-09-09: Phases A and C done, B, D and E not started
+## Status, 2026-09-09: Phases A and C done, B built and gated offline, D and E not started
 
 Written for a session with no memory of the one that did A and C. Read this, then the
 corrections section below the phases, then the phase you are about to run.
@@ -41,20 +41,42 @@ corrections section below the phases, then the phase you are about to run.
   did both by hand on 2026-09-08.
 - The checklist artifact has `p4-engine`, `p4-examples`, `p4-fixtures` and `p4-tag`
   ticked. jshvn/dispatch is verified: `schedules/ctan.ts` targets `sync.yml` at
-  `42 * * * *`.
+  `42 * * * *`. It has no `dropbox.ts`, by design.
+- dropbox is built and gated offline: one commit on `master` of the laptop clone,
+  `feat(toolbox): consume katoptra/lib`, not pushed. The Taskfile includes the toolbox at
+  `v1` with `clock`, `ping`, `ping-fail` and `report-mirror` excluded and the migrator's
+  own defined; `.taskrc.yml`, `render.txt`, the two callers at `@v1`, the Taskfile test
+  and the README are in it; `docker/` and the lock are gone. Gate B.2.1: `task check`
+  green, and the normalised render diff against the old pipeline is one added line,
+  `clock` writing `.run/start.txt`. Gate B.2.2: 153 tests and ruff green inside
+  `proton-v1`, pulled from GHCR. The compliance block passes every line but the three
+  vocabulary flags in the Phase B corrections. Gate B.2.3, `task plan` with `op` signed
+  in, has not run: the laptop's `op` was not signed in and nothing in an autonomous
+  session can sign it in.
 
 **Next, in order.**
 
 1. Confirm ctan's next scheduled runs stay green (`gh run list -R katoptra/ctan
    --workflow sync.yml`) and read one summary in the browser: the toolbox's rows, the
    engine's rows, a `Directory pages` row. Rollback is C.3.7.
-2. Phase B (dropbox), then Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning
-   policy as ctan (corrections below); dropbox does not. The two settings ctan needed,
-   a public package and a `check / check` ruleset, are per package and per repository:
-   the package is done for everyone, tlnet's ruleset (if any) is not.
+2. dropbox, from gate B.2.3, on the laptop with `op` signed in:
+   ```sh
+   cd ~/Git/katoptra/dropbox && git log -1 --oneline    # feat(toolbox): consume katoptra/lib, ahead of origin by one
+   task plan                                            # the live proof: the read-only half, then the report it prints
+   git push origin master
+   gh workflow run sync.yml && sleep 20 && gh run watch --exit-status $(gh run list --workflow sync.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+   ```
+   Pass: the log shows a pull, not a build; the summary shows the toolbox's three rows,
+   then the migrator's report; the healthcheck received a ping; a chained run, if any,
+   queued. Then tick `p5-dropbox`. Rollback is B.2.6: `git revert HEAD`, push, dispatch,
+   watch. The old `dropbox:toolbox` image can go from the laptop once the run is green.
+3. Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning policy as ctan
+   (corrections below); dropbox does not. The two settings ctan needed, a public package
+   and a `check / check` ruleset, are per package and per repository: the package is done
+   for everyone, tlnet's ruleset (if any) is not.
 
-**What the previous session left only on Josh's laptop.** Nothing the next one needs.
-For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
+**What the previous sessions left only on Josh's laptop.** The dropbox commit, unpushed
+(above), and the old `dropbox:toolbox` image, still there. For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
 2cd3b98 (`git worktree add /tmp/ctan-old 2cd3b98`, `task image` there, then
 `container run --rm --user $(id -u):$(id -g) -w /work -v "$PWD":/work -e HOME=/tmp
 ctan-sync sh -c 'task --dry --force sync 2>&1'`; the `ctan-sync` image is still on the
@@ -558,6 +580,46 @@ implicitly with `stale`.
   such policy and can use the templates as written.
 - ctan's `fixtures/` are git-excluded, so "move" meant copying the engine-relevant subset
   into lib as committed files; ctan's own stay on the laptop, untracked.
+
+## Corrections from Phase B, read before D and E
+
+- **The report fallback belongs in `report-mirror`, not `ping-fail`.** The toolbox's
+  `sync` runs `report STATUS=failed` before `ping-fail`, so a `report-phase` fallback in
+  `ping-fail` would write `.run/report.md` after the summary had been appended, and a run
+  that died before its report phase would reach the job page without its report.
+  dropbox's `report-mirror` runs the migrator's report when the file is missing
+  (`|| true`), then appends it; `ping-fail` stays `python -m migrator ping fail`.
+- **A mirror that excludes `clock` must still write `.run/start.txt`**, or the toolbox's
+  `Started` row reads "took 0 min". dropbox's `clock` is the migrator's clock plus
+  `date -u '+%s %H %u' > .run/start.txt`, and that line is the whole render diff.
+- **`plan` needs no exclude.** The `cat .run/report.md` moved into `plan-pipeline`, so the
+  toolbox's `plan -- K=v` serves as is.
+- **The compliance block's verb loop flags a toolbox-only mirror's `state`, `batches` and
+  `reconcile`.** They are the vocabulary used with its meaning, and with no engine include
+  there is nothing to collide with. For a mirror without an engine include the loop should
+  run over the toolbox's names only; the block above is left as written, and dropbox
+  passes every other line of it.
+- **The toolbox's `run` reads `CLI_ARGS_LIST`; `op` reads `ARGS`.** A mirror verb that
+  wraps `run` re-invokes it from the shell, `task run -- python -m pytest {{.CLI_ARGS}}`,
+  as `op` itself does; a call-site `vars: {CLI_ARGS_LIST: [...]}` also works on 3.53.1,
+  but that is a special var overridden. A verb that wraps `op` passes `vars: {ARGS: ...}`.
+- **The OS environment beats Taskfile `env:` on go-task 3.53.1**, an empty value
+  included. So `RECONCILE` and `RUN_BUDGET_MIN` are task vars mapped to env at the root
+  and never in `PASS`: the host's `task` exports the empty mapping to its own commands,
+  the container boundary drops it, and inside the image `task pipeline RECONCILE=true`
+  renders the mapping fresh. Had `RECONCILE` also crossed by name, the host's empty value
+  would have won.
+- **dropbox has no `CLAUDE.md`** and never had one; B.1's docs list has a file fewer.
+- **The image swap is a go-task bump and nothing else.** dropbox's lock and lib's agree on
+  Python, `proton-drive`, `age`, boto3, requests, pytest and ruff; go-task goes 3.45.4 to
+  3.53.1. The old Dockerfile's `PROTON_DRIVE_LOG_LEVEL=INFO` is a root `env:` line of the
+  Taskfile now; its `PROTON_DRIVE_CACHE_DIR` and `PROTON_DRIVE_CREDENTIALS_STORE` the
+  migrator sets itself at every phase, and `MIGRATOR_TOOLCHAIN_LOCK` nothing ever read.
+- **A non-silent `report-mirror` renders.** Called from the silent `report`, its own
+  commands still appear in `render.txt`; the A and C note holds for a silent hook only.
+- **Gate B.2.3 needs a 1Password session on the laptop**, which an autonomous session
+  cannot open. Everything before it is provable offline; push, dispatch and watch wait
+  behind it.
 
 ## Footguns
 
