@@ -501,6 +501,16 @@ implicitly with `stale`.
   nothing; the package is made public in the browser, once, before any mirror can pull.
 - **The reusable `check` reports as `check / check`**, so the ruleset edit is required
   before the first PR can merge, as written; it is one `PUT` of the ruleset body.
+- **ctan and tlnet require a full commit SHA on every `uses:`** (repository Actions
+  policy, `sha_pinning_required`, with only GitHub-owned and `go-task/*` actions
+  allowed; same-org references pass the allow-list). A caller written `@v1` fails at
+  startup with no job and no log, and so does one pinned by SHA while lib's reusable
+  workflow still names its action `@v1`: the check is transitive. So the callers pin
+  `katoptra/lib/.github/workflows/<x>.yml@<release sha> # vX.Y.Z`, lib's reusable
+  workflows pin `katoptra/lib/.github/actions/toolbox@<release sha>` (v1.0.2), and
+  Dependabot bumps both; only the include and the image float at `v1`. The compliance
+  block's two `@v1` greps read `@<sha> # v1` on those two repositories. dropbox has no
+  such policy and can use the templates as written.
 - ctan's `fixtures/` are git-excluded, so "move" meant copying the engine-relevant subset
   into lib as committed files; ctan's own stay on the laptop, untracked.
 
