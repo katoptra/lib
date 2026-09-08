@@ -265,6 +265,7 @@ name: sync
 on:
   workflow_dispatch:
     inputs: {vars: {type: string, default: ''}}
+permissions: {contents: read, actions: write}   # the chain step; a called workflow cannot raise this
 concurrency: {group: sync, cancel-in-progress: false}
 jobs:
   sync:
