@@ -1,0 +1,8 @@
+task: [clock] python -c 'import time; print(int(time.time()))'
+task: [tools] python --version
+task: [tools] proton-drive version | head -1
+task: [tools] age --version
+task: [tools] python -c 'import boto3, requests; print(boto3.__version__, requests.__version__)'
+task: [tools] ruff --version
+task: [tools] pytest --version
+task: [ping] test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"

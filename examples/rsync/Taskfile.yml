@@ -1,0 +1,40 @@
+# A consumer of the toolbox with the rsync image. Inside this repo the include is a
+# path; a mirror includes https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml.
+version: '3'
+vars:
+  SOURCE: rsync://rsync.example.org/pub/
+  BUCKET: example
+  HOST: example.ijosh.com
+includes:
+  toolbox:
+    taskfile: ../../toolbox.yml
+    flatten: true
+    vars:
+      NAME: example-rsync
+      DESC: the rsync toolbox, exercised
+      IMAGE: ghcr.io/katoptra/toolbox:rsync-dev
+      LIB_DIR: ../..
+      PASS: SEED MAX_BATCHES
+tasks:
+  pipeline:
+    cmds:
+      - {task: clock}
+      - {task: tools}
+      - {task: list}
+      - {task: ping}
+  plan-pipeline:
+    cmds:
+      - {task: clock}
+      - {task: tools}
+      - {task: list}
+  tools:
+    desc: Every tool the rsync image promises, by version
+    cmds:
+      - rsync --version | head -1
+      - aws --version
+      - gpgv --version | head -1
+      - xz --version | head -1
+      - shasum --version
+  list:
+    cmds:
+      - rsync --list-only {{.SOURCE}} > {{.RUN}}/listing.txt

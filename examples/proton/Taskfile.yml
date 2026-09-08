@@ -1,0 +1,34 @@
+# A consumer of the toolbox with the proton image.
+version: '3'
+includes:
+  toolbox:
+    taskfile: ../../toolbox.yml
+    flatten: true
+    vars:
+      NAME: example-proton
+      DESC: the proton toolbox, exercised
+      IMAGE: ghcr.io/katoptra/toolbox:proton-dev
+      LIB_DIR: ../..
+    excludes: [clock]   # a Python engine keeps its own clock
+tasks:
+  pipeline:
+    cmds:
+      - {task: clock}
+      - {task: tools}
+      - {task: ping}
+  plan-pipeline:
+    cmds:
+      - {task: clock}
+      - {task: tools}
+  clock:
+    cmds:
+      - python -c 'import time; print(int(time.time()))'
+  tools:
+    desc: Every tool the proton image promises, by version
+    cmds:
+      - python --version
+      - proton-drive version | head -1
+      - age --version
+      - python -c 'import boto3, requests; print(boto3.__version__, requests.__version__)'
+      - ruff --version
+      - pytest --version

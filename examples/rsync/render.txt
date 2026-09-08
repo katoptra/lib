@@ -1,0 +1,8 @@
+task: [clock] mkdir -p /work/examples/rsync/.run && date -u '+%s %H %u' > /work/examples/rsync/.run/start.txt
+task: [tools] rsync --version | head -1
+task: [tools] aws --version
+task: [tools] gpgv --version | head -1
+task: [tools] xz --version | head -1
+task: [tools] shasum --version
+task: [list] rsync --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt
+task: [ping] test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"

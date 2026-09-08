@@ -1,0 +1,171 @@
+# The toolbox: every verb a katoptra mirror has whatever moves its bytes. A mirror
+# includes this file flattened, passes NAME, DESC and IMAGE on the include, keeps its
+# identity in its own root vars, and defines two verbs: pipeline and plan-pipeline,
+# both of which run inside IMAGE. A verb listed under the include's excludes: and
+# defined in the mirror replaces the one here.
+#
+# Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
+# the mirror's value; defaults go inline), and host-side and in-container verbs share
+# one namespace, so the names below are reserved.
+version: '3'
+
+vars:
+  RUN: '{{.ROOT_DIR}}/.run'
+  # The container runtime, not the sync engine: Apple container when its daemon is up,
+  # else Docker. ENGINE=docker forces Docker.
+  ENGINE:
+    sh: |
+      if [ -n "$ENGINE" ]; then echo "$ENGINE"
+      elif command -v container >/dev/null 2>&1 && container system status >/dev/null 2>&1; then echo container
+      else echo docker; fi
+  # Names cross into the container; values never appear on a command line. op.env
+  # names, the mirror's PASS list, and what the Actions job summary needs.
+  PASS_ENV:
+    sh: |
+      { test -f {{.ROOT_DIR}}/op.env && grep -v '^#' {{.ROOT_DIR}}/op.env | sed -n 's/=.*//p'; true; } | sed 's/^/-e /' | tr '\n' ' '
+      for v in {{.PASS}} GITHUB_STEP_SUMMARY GITHUB_RUN_ID HEALTHCHECK_URL; do printf '%s %s ' -e "$v"; done
+  # The image variant is the tag up to its version: ghcr.io/katoptra/toolbox:rsync-v1 -> rsync.
+  VARIANT:
+    sh: echo "{{.IMAGE}}" | sed 's/.*://; s/-v[0-9].*//; s/-dev$//'
+  # The repository's top level rides in at /work and the Taskfile's directory is the
+  # working directory. For a mirror the two are the same; for the examples in
+  # katoptra/lib the include one level up must be reachable.
+  TOP:
+    sh: git -C {{.ROOT_DIR}} rev-parse --show-toplevel 2>/dev/null || echo {{.ROOT_DIR}}
+  PREFIX:
+    sh: git -C {{.ROOT_DIR}} rev-parse --show-prefix 2>/dev/null || true
+
+tasks:
+  default:
+    desc: Print the menu
+    silent: true
+    # ponytail: hand-maintained listing -- go-task can neither group nor annotate, so a
+    # new verb means a line below. `task --list` stays the generated view.
+    cmds:
+      - |
+        b=$(printf '\033[1m'); c=$(printf '\033[1;36m'); d=$(printf '\033[2m'); r=$(printf '\033[0m')
+        printf '%s\n' \
+          "" \
+          "${b}{{.NAME}}${r}   ${d}{{.DESC}}${r}" \
+          "" \
+          "${c}pipeline -- needs the vault (op.env) or the secrets in your environment${r}" \
+          "  task sync                 One run: task pipeline inside the toolbox" \
+          "  task plan                 The read-only half: task plan-pipeline inside the toolbox" \
+          "" \
+          "${c}checks -- offline, no credentials${r}" \
+          "  task check                Render every command of the pipeline and diff it against render.txt" \
+          "  task render-update        Accept the current render as render.txt" \
+          "  task --list               The pipeline's own verbs" \
+          "" \
+          "${c}toolbox -- {{.ENGINE}}, image {{.IMAGE}}${r}" \
+          "  task image                Pull it (a no-op while it exists locally)" \
+          "  task image-build          Build it from a local checkout of katoptra/lib (LIB_DIR=../lib)" \
+          "  task image-clean          Remove it, so the next task pulls or builds again" \
+          "  task run -- <cmd>         Run anything inside it, with this repo at /work" \
+          "  task op -- <cmd>          Same, with secrets resolved by name from op.env" \
+          "  task clean                Delete .run, the Taskfile cache and every other ignored file" \
+          {{.MENU}} \
+          ""
+
+  # ---- toolbox ----
+  image:
+    desc: Pull the toolbox image
+    run: once
+    status: ['{{.ENGINE}} image inspect {{.IMAGE}} >/dev/null 2>&1']
+    cmds:
+      - '{{.ENGINE}} pull {{.IMAGE}}'
+
+  image-build:
+    desc: 'Build the toolbox image from a local katoptra/lib checkout: task image-build LIB_DIR=../lib'
+    cmds:
+      - '{{.ENGINE}} build -t {{.IMAGE}} -f {{.LIB_DIR | default "../lib"}}/docker/{{.VARIANT}}.Dockerfile {{.LIB_DIR | default "../lib"}}'
+
+  image-clean:
+    desc: Remove the toolbox image
+    cmds:
+      - '{{.ENGINE}} image rm {{.IMAGE}}'
+
+  run:
+    desc: 'Run a command inside the toolbox with the repo at /work: task run -- task --list'
+    deps: [image]
+    # Neither -i nor -t: Apple container leaves the host terminal non-blocking after a
+    # run that attaches stdin or a tty. Output still streams and Ctrl-C still stops it.
+    # GITHUB_STEP_SUMMARY is a host path, mounted at the very path its value names.
+    # Each argument re-quoted, so task run -- sh -c 'a; b' arrives intact.
+    cmds:
+      - >-
+        {{.ENGINE}} run --rm
+        --user $(id -u):$(id -g)
+        -v "{{.TOP}}":/work -w /work/{{.PREFIX}}
+        ${GITHUB_STEP_SUMMARY:+-v "$GITHUB_STEP_SUMMARY":"$GITHUB_STEP_SUMMARY"}
+        -e HOME=/tmp {{.PASS_ENV}}
+        {{.IMAGE}} {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}
+
+  op:
+    desc: 'Run a command inside the toolbox with secrets from 1Password: task op -- task pipeline'
+    cmds:
+      # No op.env means the secrets are already in the environment (GitHub secrets, say).
+      - |
+        if test -f op.env; then op run --env-file=op.env -- task run -- {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}
+        else task run -- {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}; fi
+
+  clean:
+    desc: Delete every file git ignores
+    cmds:
+      - git clean -fdX
+
+  # ---- pipeline ----
+  sync:
+    desc: One run, inside the toolbox
+    cmds:
+      - task: op
+        vars: {CLI_ARGS: task pipeline}
+
+  plan:
+    desc: The read-only half, inside the toolbox
+    cmds:
+      - task: op
+        vars: {CLI_ARGS: task plan-pipeline}
+
+  # ---- checks ----
+  render:
+    desc: Render every command of the pipeline inside the toolbox, run none, save to .run/render.txt
+    deps: [image]
+    # Not via `run`: the output is the artifact, so it is captured, not streamed, and a
+    # dry run needs no secrets, so no names cross into the container. task writes the
+    # rendered commands to stderr; the redirect inside the container folds them into
+    # stdout, so the engine's own progress lines on the host's stderr stay out of the file.
+    cmds:
+      - mkdir -p {{.RUN}}
+      - >-
+        {{.ENGINE}} run --rm --user $(id -u):$(id -g) -v "{{.TOP}}":/work -w /work/{{.PREFIX}}
+        -e HOME=/tmp {{.IMAGE}} sh -c 'task --dry --force pipeline 2>&1' > {{.RUN}}/render.txt
+      - cat {{.RUN}}/render.txt
+
+  check:
+    desc: render, then diff against the committed render.txt
+    cmds:
+      - task: render
+      - 'diff -u render.txt {{.RUN}}/render.txt && echo "check: render matches render.txt"'
+
+  render-update:
+    desc: render, then accept it as render.txt
+    cmds:
+      - task: render
+      - cp {{.RUN}}/render.txt render.txt
+
+  # ---- inside the toolbox ----
+  clock:
+    desc: Record the run's start as "epoch UTC-hour weekday" in .run/start.txt
+    cmds:
+      - mkdir -p {{.RUN}} && date -u '+%s %H %u' > {{.RUN}}/start.txt
+
+  ping:
+    desc: Dead man's switch; healthchecks.io emails when its grace passes without this (skipped if HEALTHCHECK_URL is unset)
+    cmds:
+      - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
+
+  ping-fail:
+    desc: Tell healthchecks.io the run failed (skipped if HEALTHCHECK_URL is unset)
+    cmds:
+      - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail"
