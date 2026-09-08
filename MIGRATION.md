@@ -18,7 +18,7 @@ Read `README.md` first, then this whole file, then start. Phase order matters. W
 a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
 re-run the gate; never skip one.
 
-## Status, 2026-09-09: Phase A done, Phase C at the merge, B, D and E not started
+## Status, 2026-09-09: Phases A and C done, B, D and E not started
 
 Written for a session with no memory of the one that did A and C. Read this, then the
 corrections section below the phases, then the phase you are about to run.
@@ -29,40 +29,28 @@ corrections section below the phases, then the phase you are about to run.
   its fixtures), `v1.0.1` (a80d19d: `image` pulls with `<engine> image pull`), `v1.0.2`
   (`04f7901cf1aa7551bc43db5ff801a225a189c42a`: the reusable workflows pin their own
   action). `v1` points at v1.0.2. Both images exist on ghcr.io.
-- ctan is migrated on branch `josh/toolbox`, pull request katoptra/ctan#26, with every
-  local gate green: the render diff against the old pipeline is only the expected
-  `clock`/`list` lines, the fixture checks pass, the compliance block prints
-  `compliant: ctan`. In Actions its `check / check` reaches `task check` and fails only
-  at the image pull, `unauthorized`.
+- ctan is migrated: pull request katoptra/ctan#26 squash-merged as d55612b on
+  2026-09-08 23:13 UTC, every gate green (the render diff against the old pipeline is
+  only the expected `clock`/`list` lines, the fixture checks, the compliance block,
+  `check / check`). The first hand-started run, 34289653678, was green in two minutes:
+  the image pulled from GHCR, the state found, 512,046 objects at 140.08 GB, one batch,
+  every smoke check passed, the ping sent, nothing chained. The 23:42 dispatch is the
+  first scheduled run; the end-state table wants three of them.
+- The GHCR package is public and the ctan ruleset requires `check / check`; the owner
+  did both by hand on 2026-09-08.
 - The checklist artifact has `p4-engine`, `p4-examples`, `p4-fixtures` and `p4-tag`
   ticked. jshvn/dispatch is verified: `schedules/ctan.ts` targets `sync.yml` at
   `42 * * * *`.
 
-**Blocked on the owner: two settings.** The agent's permission classifier refused both.
-Do them by hand, or confirm they are done, before anything below.
-
-1. The GHCR package is private, so no mirror can pull in Actions. There is no API for
-   visibility. In the browser, under
-   https://github.com/orgs/katoptra/packages/container/toolbox/settings, change the
-   visibility to public. Check: an anonymous bearer token from
-   `https://ghcr.io/token?scope=repository:katoptra/toolbox:pull` gets a 200 from
-   `https://ghcr.io/v2/katoptra/toolbox/manifests/rsync-v1`; today it gets 401.
-2. The ctan ruleset, id 21527871, requires a status check named `check`; the reusable
-   workflow reports `check / check`, so nothing can merge until it is renamed:
-   ```sh
-   gh api repos/katoptra/ctan/rulesets/21527871 | jq '{name, target, enforcement, bypass_actors, conditions, rules: (.rules | map(if .type == "required_status_checks" then .parameters.required_status_checks |= map(if .context == "check" then .context = "check / check" else . end) else . end))}' > /tmp/ruleset.json
-   gh api -X PUT repos/katoptra/ctan/rulesets/21527871 --input /tmp/ruleset.json
-   ```
-
 **Next, in order.**
 
-1. Rerun ctan's check and watch it green: `gh run rerun 34288482692 -R katoptra/ctan`,
-   or push an empty commit to `josh/toolbox`. Then C.3.6 as written: merge between :50
-   and :30 UTC, `gh workflow run sync.yml -R katoptra/ctan`, watch, then the :42 run. The
-   summary must show the toolbox's rows, the engine's rows and a `Directory pages` row,
-   and the healthcheck a ping. Rollback is C.3.7. Tick `p5-ctan`.
+1. Confirm ctan's scheduled runs stay green (`gh run list -R katoptra/ctan --workflow
+   sync.yml`) and read one summary in the browser: the toolbox's rows, the engine's rows,
+   a `Directory pages` row. Tick `p5-ctan` in the checklist artifact. Rollback is C.3.7.
 2. Phase B (dropbox), then Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning
-   policy as ctan (corrections below); dropbox does not.
+   policy as ctan (corrections below); dropbox does not. The two settings ctan needed,
+   a public package and a `check / check` ruleset, are per package and per repository:
+   the package is done for everyone, tlnet's ruleset (if any) is not.
 
 **What the previous session left only on Josh's laptop.** Nothing the next one needs.
 For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
