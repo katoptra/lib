@@ -18,7 +18,7 @@ Read `README.md` first, then this whole file, then start. Phase order matters. W
 a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
 re-run the gate; never skip one.
 
-## Status, 2026-09-09: Phases A and C done, B built and gated offline, D and E not started
+## Status, 2026-09-09: Phases A, B and C done, D and E not started
 
 Written for a session with no memory of the one that did A and C. Read this, then the
 corrections section below the phases, then the phase you are about to run.
@@ -42,41 +42,39 @@ corrections section below the phases, then the phase you are about to run.
 - The checklist artifact has `p4-engine`, `p4-examples`, `p4-fixtures` and `p4-tag`
   ticked. jshvn/dispatch is verified: `schedules/ctan.ts` targets `sync.yml` at
   `42 * * * *`. It has no `dropbox.ts`, by design.
-- dropbox is built and gated offline: one commit on `master` of the laptop clone,
-  `feat(toolbox): consume katoptra/lib`, not pushed. The Taskfile includes the toolbox at
-  `v1` with `clock`, `ping`, `ping-fail` and `report-mirror` excluded and the migrator's
-  own defined; `.taskrc.yml`, `render.txt`, the two callers at `@v1`, the Taskfile test
-  and the README are in it; `docker/` and the lock are gone. Gate B.2.1: `task check`
-  green, and the normalised render diff against the old pipeline is one added line,
-  `clock` writing `.run/start.txt`. Gate B.2.2: 153 tests and ruff green inside
-  `proton-v1`, pulled from GHCR. The compliance block passes every line but the three
-  vocabulary flags in the Phase B corrections. Gate B.2.3, `task plan` with `op` signed
-  in, has not run: the laptop's `op` was not signed in and nothing in an autonomous
-  session can sign it in.
+- dropbox is migrated: b8861a7 `feat(toolbox): consume katoptra/lib`, pushed to `master`
+  on 2026-09-08 23:52 UTC. The Taskfile includes the toolbox at `v1` with `clock`,
+  `ping`, `ping-fail` and `report-mirror` excluded and the migrator's own defined;
+  `.taskrc.yml`, `render.txt`, the two callers at `@v1`, the Taskfile test and the README
+  are in it; `docker/` and the lock are gone. Gate B.2.1: `task check` green, and the
+  normalised render diff against the old pipeline is one added line, `clock` writing
+  `.run/start.txt`. Gate B.2.2: 153 tests and ruff green inside `proton-v1`. The
+  compliance block passes every line but the three vocabulary flags in the Phase B
+  corrections. Gate B.2.3 was cut short (corrections). The first run on the new shape,
+  34292572209, was green in 5 minutes 20 seconds: the image pulled from GHCR, one
+  `op run` around the pipeline, the state restored as run 28 with 161,649 files and
+  655 GB mirrored, 157 inventory pages in four minutes, nothing left to batch, report
+  PASS, `report-mirror` appended the migrator's report, ping sent, nothing chained.
+  `p5-dropbox` is ticked. The end-state table wants two more green runs; dropbox has no
+  schedule, so the owner dispatches them.
 
 **Next, in order.**
 
 1. Confirm ctan's next scheduled runs stay green (`gh run list -R katoptra/ctan
    --workflow sync.yml`) and read one summary in the browser: the toolbox's rows, the
    engine's rows, a `Directory pages` row. Rollback is C.3.7.
-2. dropbox, from gate B.2.3, on the laptop with `op` signed in:
-   ```sh
-   cd ~/Git/katoptra/dropbox && git log -1 --oneline    # feat(toolbox): consume katoptra/lib, ahead of origin by one
-   task plan                                            # the live proof: the read-only half, then the report it prints
-   git push origin master
-   gh workflow run sync.yml && sleep 20 && gh run watch --exit-status $(gh run list --workflow sync.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-   ```
-   Pass: the log shows a pull, not a build; the summary shows the toolbox's three rows,
-   then the migrator's report; the healthcheck received a ping; a chained run, if any,
-   queued. Then tick `p5-dropbox`. Rollback is B.2.6: `git revert HEAD`, push, dispatch,
-   watch. The old `dropbox:toolbox` image can go from the laptop once the run is green.
+2. dropbox: read run 34292572209's summary in the browser (the toolbox's three rows, then
+   the migrator's report), confirm the healthcheck saw the 23:58 UTC ping, and dispatch
+   two more runs over the following days (`gh workflow run sync.yml -R katoptra/dropbox`,
+   then `gh run watch`); the end-state table wants three green. Rollback is B.2.6.
 3. Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning policy as ctan
    (corrections below); dropbox does not. The two settings ctan needed, a public package
    and a `check / check` ruleset, are per package and per repository: the package is done
    for everyone, tlnet's ruleset (if any) is not.
 
-**What the previous sessions left only on Josh's laptop.** The dropbox commit, unpushed
-(above), and the old `dropbox:toolbox` image, still there. For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
+**What the previous sessions left only on Josh's laptop.** The old `dropbox:toolbox` and
+`dropbox-mirror:toolbox` images, no longer used: `container image rm dropbox:toolbox
+dropbox-mirror:toolbox`. For the record: the old pipeline's render for the C.3.1 diff came from ctan commit
 2cd3b98 (`git worktree add /tmp/ctan-old 2cd3b98`, `task image` there, then
 `container run --rm --user $(id -u):$(id -g) -w /work -v "$PWD":/work -e HOME=/tmp
 ctan-sync sh -c 'task --dry --force sync 2>&1'`; the `ctan-sync` image is still on the
@@ -619,7 +617,13 @@ implicitly with `stale`.
   commands still appear in `render.txt`; the A and C note holds for a silent hook only.
 - **Gate B.2.3 needs a 1Password session on the laptop**, which an autonomous session
   cannot open. Everything before it is provable offline; push, dispatch and watch wait
-  behind it.
+  behind it. When the owner ran it, `task plan` got through `clock` and `session` and was
+  interrupted at `state` behind a screen of Apple container 1.3.1 failing to forward
+  signal 28 (a terminal resize) into the container, and Ctrl-C failed to forward the same
+  way; task force-quit and the container went away with the client. The same phase took
+  11 seconds in the Actions run, so the stall was not the phase. The old Taskfile ran the
+  same `container run` flags, so this is the laptop's engine, not the migration; the
+  first production run stood in for the gate.
 
 ## Footguns
 
