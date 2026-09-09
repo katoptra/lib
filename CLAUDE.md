@@ -1,8 +1,7 @@
 # lib
 
 The toolbox every katoptra mirror includes by URL. Read `README.md` for the contract and
-`docs/superpowers/specs/2026-09-08-toolbox-library-design.md` for the decisions. `MIGRATION.md` is how a
-mirror moves onto it.
+`docs/superpowers/specs/2026-09-08-toolbox-library-design.md` for the decisions.
 
 ## Constraints
 

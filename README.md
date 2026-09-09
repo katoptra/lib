@@ -383,7 +383,7 @@ jobs:
 ```
 
 A repository whose Actions policy requires a full commit SHA on every `uses:` pins the
-two calls to a release commit instead, `@a80d19d76766d058e9e10190277525f9d452b21d # v1.0.1`,
+two calls to a release commit instead, `@04f7901cf1aa7551bc43db5ff801a225a189c42a # v1.0.2`,
 and Dependabot bumps them; the include and the image still float at `v1`.
 
 Then `task render-update` once, commit `render.txt`, and `task check` from then on.
