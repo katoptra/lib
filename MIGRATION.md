@@ -18,7 +18,7 @@ Read `README.md` first, then this whole file, then start. Phase order matters. W
 a phase, follow the steps in order. A gate that fails means stop, understand, fix, and
 re-run the gate; never skip one.
 
-## Status, 2026-09-09: Phases A, B and C done, D and E not started
+## Status, 2026-09-09: Phases A, B and C done, D built and awaiting its merge, E not started
 
 Written for a session with no memory of the one that did A and C. Read this, then the
 corrections section below the phases, then the phase you are about to run.
@@ -57,6 +57,21 @@ corrections section below the phases, then the phase you are about to run.
   PASS, `report-mirror` appended the migrator's report, ping sent, nothing chained.
   `p5-dropbox` is ticked. The end-state table wants two more green runs; dropbox has no
   schedule, so the owner dispatches them.
+- tlnet (Phase D) is built and gated offline on branch `josh/toolbox`: pull request
+  katoptra/tlnet#2, commit 26c0427, opened 2026-09-09 00:25 UTC. The Taskfile is the D.2
+  shape with `LIST_FLOOR: 8500`, `AWS_REGION: auto` beside the three `R2_*` mappings in
+  `env:`, the filter's globs quoted, `index` writing `.run/index.txt` once the landing page
+  landed and `report-mirror` reading it; the callers pin `04f7901 # v1.0.2`,
+  `timeout-minutes: 60`. Gate D.3.1: `task check` green and `render.txt` read end to end:
+  every command names the `tlnet` bucket, the subtree, the filter and `index.html` where
+  expected, and nothing names ctan beyond dante's hostname. Gate D.3.2: `task run -- task
+  list` inside the image gave 17,000 lines, all under `systems/texlive/tlnet/`, none
+  revision-stamped, none under `update-tlmgr-r`, 6.79 GB, the largest file 145 MB
+  (`archive/context.doc.tar.xz`), every root installer, updater and tlpdb control file
+  present, no symlink lines. Gate D.3.3 (scratch) skipped: no R2 credentials and no
+  1Password session in the shell. The compliance block passes, the engine-consumer lines
+  included. The ruleset edit (`check` to `check / check`, ruleset 21669759) and the merge
+  were refused by the permission classifier, as for ctan; the owner does both.
 
 **Next, in order.**
 
@@ -67,10 +82,15 @@ corrections section below the phases, then the phase you are about to run.
    the migrator's report), confirm the healthcheck saw the 23:58 UTC ping, and dispatch
    two more runs over the following days (`gh workflow run sync.yml -R katoptra/dropbox`,
    then `gh run watch`); the end-state table wants three green. Rollback is B.2.6.
-3. Phase D (tlnet), then Phase E. tlnet has the same SHA-pinning policy as ctan
-   (corrections below); dropbox does not. The two settings ctan needed, a public package
-   and a `check / check` ruleset, are per package and per repository: the package is done
-   for everyone, tlnet's ruleset (if any) is not.
+3. tlnet: rename the ruleset's required check from `check` to `check / check` by hand
+   (https://github.com/katoptra/tlnet/rules/21669759), confirm `check / check` is green on
+   katoptra/tlnet#2, squash-merge it, then outside 03:00 to 04:30 UTC
+   `gh workflow run sync.yml -R katoptra/tlnet` and `gh run watch`; pass is D.3.5. A
+   hand-started run outside hour 03 does not reconcile, so a second hand run with
+   `-f vars='RECONCILE=true'` shows the first orphan count under watch before the 03:30
+   dispatch does it unattended; every orphan should be a key upstream no longer lists, and
+   never `index.html`. Then tick `p5-tlnetc`. Rollback is D.3.6.
+4. Phase E.
 
 **What the previous sessions left only on Josh's laptop.** The old `dropbox:toolbox` and
 `dropbox-mirror:toolbox` images, no longer used: `container image rm dropbox:toolbox
@@ -624,6 +644,27 @@ implicitly with `stale`.
   11 seconds in the Actions run, so the stall was not the phase. The old Taskfile ran the
   same `container run` flags, so this is the laptop's engine, not the migration; the
   first production run stood in for the gate.
+
+## Corrections from Phase D, read before E
+
+- **The D.2 `env:` block needs `AWS_REGION: auto`.** The old workflow exported it and the
+  CLI signs with a region; the block as written had the three `R2_*` mappings and the
+  config file only. tlnet's carries it.
+- **The `FILTER` value renders its globs unquoted into the shell.** `--exclude=*` and the
+  `***` include reach `sh` bare; nothing in `/work` matches them, so the listing was right
+  either way, but the old `fetch` quoted them and tlnet quotes them:
+  `--exclude='*.r[0-9]*.tar.xz' ... --exclude='*'`.
+- **The subtree's root files are ordinary batch entries, not decision-batch ones.**
+  `split` sends `TL/tlpkg/` and slash-less keys to the last batch; `install-tl*` and
+  `update-tlmgr-latest.*` carry slashes, so they ride the batch their sort order gives
+  them, each with its `.sha512` and `.asc` beside it by the extension rule, which is what
+  `verify` needs. ctan has verified this subtree the same way every hour.
+- **D.3.2's "a few thousand" is 17,000 lines**, 6.79 GB, 14,898 of them under `archive/`;
+  the raw listing has 429 directory lines and no symlink lines, so `-L` resolved every
+  stable name and the excludes dropped every revision-stamped one.
+- **The gate commands run one at a time here.** The permission classifier refused the
+  listing gate joined to its checks in one command, and the ruleset `PUT`; the plain
+  `task run -- task list` and the read-only checks after it went through.
 
 ## Footguns
 
