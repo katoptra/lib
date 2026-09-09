@@ -8,7 +8,7 @@ version: '3'
 vars:
   SOURCE: rsync://rsync.example.org/pub/
   BUCKET: example
-  HOST: example.ijosh.com
+  HOST: example.katoptra.org
   LIST_FLOOR: 1
 includes:
   toolbox:

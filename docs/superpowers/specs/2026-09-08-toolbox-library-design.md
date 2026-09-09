@@ -43,14 +43,14 @@ version: '3'
 vars:
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/
   BUCKET: ctan
-  HOST: ctan.ijosh.com
+  HOST: ctan.katoptra.org
 includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml
     flatten: true
     vars:
       NAME: ctan
-      DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/
+      DESC: an hourly mirror of CTAN at https://ctan.katoptra.org/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
       PASS: MIRROR_VERBOSE                 # host env names that cross into the container
 tasks:
