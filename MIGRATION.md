@@ -80,7 +80,11 @@ corrections section below the phases, then the phase you are about to run.
   read-backs had nothing to do; the state landed at `.state/applied.txt.xz`, `index`
   re-uploaded the landing page (its stamp reads 00:28 UTC over the domain), ping sent,
   nothing chained. Hour 00, so no reconcile. The summary's `Signature` row appears only
-  when the delta touches the subtree, which this run's did not.
+  when the delta touches the subtree, which this run's did not. The second run,
+  34295392727 with `RECONCILE=true`, was green in 36 seconds: the state read back from the
+  bucket, the delta still empty, `rebuild` listed the bucket, and the orphan sweep found
+  nothing (`delete` skipped on an empty `orphans.txt`), so the bucket holds exactly the
+  17,000 upstream keys, `.state/` and `index.html`. `p5-tlnetc` is ticked.
 
 **Next, in order.**
 
@@ -91,12 +95,11 @@ corrections section below the phases, then the phase you are about to run.
    the migrator's report), confirm the healthcheck saw the 23:58 UTC ping, and dispatch
    two more runs over the following days (`gh workflow run sync.yml -R katoptra/dropbox`,
    then `gh run watch`); the end-state table wants three green. Rollback is B.2.6.
-3. tlnet: a second hand run, `gh workflow run sync.yml -R katoptra/tlnet -f
-   vars='RECONCILE=true'`, watched, shows the first orphan count before the 03:30 dispatch
-   reconciles unattended; every orphan should be a key upstream no longer lists, and
-   never `index.html`. The first run with a real delta (the 03:30 one, once upstream
-   moves) is the first to exercise `prepare`, `verify`, the batches and `smoke`'s
-   read-backs: read its summary for the `Signature` row. Rollback is D.3.6.
+3. tlnet: let the 03:30 dispatches run (`gh run list -R katoptra/tlnet --workflow
+   sync.yml`); the end-state table wants three green. The first run with a real delta,
+   once upstream moves, is the first to exercise `prepare`, `verify`, the batches and
+   `smoke`'s read-backs: read its summary in the browser for the `Signature` row and the
+   `Delta` row's orphan count. Rollback is D.3.6.
 4. Phase E.
 
 **What the previous sessions left only on Josh's laptop.** The old `dropbox:toolbox` and
