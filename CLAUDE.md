@@ -33,9 +33,12 @@ The toolbox every katoptra mirror includes by URL. Read `README.md` for the cont
   must tolerate an empty one.
 - `.taskrc.yml` keys are `trusted-hosts` and `cache-expiry`; task ignores a key it does
   not know, silently, and refetches on every invocation.
-- Every tool in an image comes from `toolchain.lock.toml` with a checksum, read through
-  `docker/lock.py`, the one reader the Dockerfiles and the toolbox action share. The AWS
-  CLI zip is the marked exception.
+- Every tool in an image comes from `toolchain.lock.toml`, read through `docker/lock.py`,
+  the one reader the Dockerfiles and the toolbox action share, and every one is checked
+  before it is used. Most carry a recorded sha256. The AWS CLI zip carries none, because
+  upstream publishes a detached PGP signature instead, so the fetch stage verifies that
+  signature against `docker/aws-cli.pub` and requires the fingerprint the lock pins,
+  through the same GOODSIG-and-VALIDSIG awk gate the engine uses for TeX Live.
 - Images set `TASK_REMOTE_OFFLINE=1`. Inside a run the include resolves from the
   mirror's `.task/remote` cache, bind-mounted with the repo, never from the network.
 - `run` and `render` mount the repository's git top level at `/work` and set the working

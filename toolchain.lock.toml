@@ -58,11 +58,15 @@ archive = "op_linux_arm64_v2.39.0.zip"
 sha256 = "829baeff1c07e055cfa132031b1d9f2282ccdf5076258e482caf2fda70aea5d0"
 
 [awscli]
-# ponytail: the installer zip carries a PGP signature this lock does not record; HTTPS
-# and the version pin are the guarantee. Ceiling: a poisoned CDN. Upgrade path: import
-# AWS's public key in the fetch stage and gpg --verify the zip.
+# AWS publishes no checksum for the installer, only a detached PGP signature beside each
+# artifact. The fetch stage verifies that signature against docker/aws-cli.pub and requires
+# the signing key to be this fingerprint, so a substituted zip fails the build.
+# That key expires 2027-07-01, and an expired one is EXPKEYSIG, not GOODSIG: refresh
+# docker/aws-cli.pub from the AWS CLI User Guide before then, and this fingerprint with it
+# if AWS has moved to a new key.
 version = "2.36.24"
 url = "https://awscli.amazonaws.com/awscli-exe-linux-{arch}-{version}.zip"
+key_fingerprint = "FB5DB77FD5C118B80511ADA8A6310ACC4672475C"   # AWS CLI Team <aws-cli@amazon.com>
 
 [proton_drive_cli]
 version = "0.8.0"

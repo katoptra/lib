@@ -15,6 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/toolbox
+      # Each guard's own cases prove what it refuses; the build proves what it accepts.
+      - name: The security guards refuse what they should
+        if: matrix.variant == 'rsync'
+        run: |
+          sh .github/validate-vars.sh --check
+          sh docker/gpg-gate-check.sh
       - name: Build the image the example names
         run: docker build -t ghcr.io/katoptra/toolbox:${{ matrix.variant }}-dev -f docker/${{ matrix.variant }}.Dockerfile .
       - name: The example's tools resolve inside the image

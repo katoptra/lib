@@ -38,6 +38,14 @@ jobs:
         with: {op: "${{ hashFiles('op.env') != '' }}"}   # a mirror without an op.env never calls op
       # df is the host's: the image and the batches share the runner's disk.
       - run: df -h . && task image
+      # The shell splits vars into words and each becomes a go-task variable, which the
+      # engine may splice into a command. A word that is not a bare key and a plain value
+      # is refused here, in a step that holds no secrets, so a rejected input never reaches
+      # the one below.
+      - name: The vars input is KEY=value pairs and nothing else
+        env:
+          VARS: ${{ inputs.vars }}
+        run: sh .lib/.github/validate-vars.sh "$VARS"
       - name: task sync
         id: sync
         env:

@@ -4,10 +4,14 @@
 # comes from toolchain.lock.toml at the repo root, which is the build context.
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS fetch
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 gnupg gpgv \
  && rm -rf /var/lib/apt/lists/*
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/lock.py /usr/local/bin/lock
+# The trust root for the AWS CLI zip, which upstream publishes with a signature and no
+# checksum. Armoured so a key change reads as a diff. This stage is discarded, so gnupg
+# and the key cost the shipped image nothing.
+COPY docker/aws-cli.pub /etc/aws-cli.pub
 
 # Architecture from the image itself: BuildKit sets TARGETARCH, Apple container does
 # not, and a defaulted arg would install amd64 binaries into an arm64 image.
@@ -19,6 +23,10 @@ RUN set -eu; \
     tar -xzf /tmp/task.tgz -C /tmp task; install -m 0755 /tmp/task /usr/local/bin/task; \
     url="$(lock awscli.url | sed "s/{arch}/$m/; s/{version}/$(lock awscli.version)/")"; \
     curl -fsSL "$url" -o /tmp/awscli.zip; \
+    curl -fsSL "$url.sig" -o /tmp/awscli.zip.sig; \
+    gpg --batch --dearmor -o /tmp/aws-cli.gpg /etc/aws-cli.pub; \
+    gpgv --status-fd 1 --keyring /tmp/aws-cli.gpg /tmp/awscli.zip.sig /tmp/awscli.zip \
+      | awk -v k="$(lock awscli.key_fingerprint)" '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}'; \
     cd /tmp && unzip -q awscli.zip && ./aws/install; \
     d=/usr/local/aws-cli/v2/current/dist/awscli; \
     mkdir /tmp/keep; for k in s3 sts; do mv "$d/botocore/data/$k" /tmp/keep/; done; \

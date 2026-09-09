@@ -209,6 +209,11 @@ tasks:
       # tlpkg/ (the tlpdb) and the bucket-root files (timestamp among them), is last, so
       # nothing a client reads to decide what to fetch can name a key that has not landed.
       # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, so verify always finds the file its signature names.
+      # ponytail: BATCH_GB is spliced bare because it lands inside $(( )), where a quoted
+      # operand is a syntax error. What keeps it safe is the workflow refusing a vars input
+      # that is not a plain value. Ceiling: another caller handing untrusted text to
+      # `task sync --`. Upgrade path: assert it is numeric here, and regenerate render.txt
+      # in lib, ctan and tlnet, which all record this line.
       - >-
         awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
           index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
@@ -404,7 +409,7 @@ tasks:
     # queue behind a long one can start in 04 and skip the day; the next day's run does it,
     # and RECONCILE=true asks for it by hand.
     status:
-      - 'test "{{.RECONCILE | default "auto"}}" = false || { test "{{.RECONCILE | default "auto"}}" = auto && test "$(cut -d" " -f2 {{.RUN}}/start.txt)" != 03; }'
+      - 'test {{shellQuote (.RECONCILE | default "auto")}} = false || { test {{shellQuote (.RECONCILE | default "auto")}} = auto && test "$(cut -d" " -f2 {{.RUN}}/start.txt)" != 03; }'
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
