@@ -209,7 +209,7 @@ version: '3'
 vars:
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/
   BUCKET: tlnet
-  HOST: tlnet.ijosh.com
+  HOST: tlnet.katoptra.org
   TL: systems/texlive/tlnet
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
   CEILING_GB: 10
@@ -227,7 +227,7 @@ includes:
     excludes: [report-engine, report-mirror]
     vars:
       NAME: tlnet
-      DESC: a daily mirror of TeX Live's tlnet at https://tlnet.ijosh.com/
+      DESC: a daily mirror of TeX Live's tlnet at https://tlnet.katoptra.org/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v2
       PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
@@ -339,7 +339,7 @@ version: '3'
 vars:
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/
   BUCKET: ctan
-  HOST: ctan.ijosh.com
+  HOST: ctan.katoptra.org
 includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
@@ -347,7 +347,7 @@ includes:
     excludes: [report-engine]
     vars:
       NAME: ctan
-      DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/
+      DESC: an hourly mirror of CTAN at https://ctan.katoptra.org/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v2
       PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
