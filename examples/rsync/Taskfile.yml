@@ -2,9 +2,8 @@
 # the includes are paths; a mirror includes
 # https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml and
 # https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml. The pipeline is
-# the engine's vocabulary in order; render.txt, every command of it, is the library's
-# own check of the engine, and `task run -- task offline` runs the verbs that need no
-# bucket over fixtures/.
+# the engine's; render.txt, every command of it, is the library's own check of the engine,
+# and `task run -- task offline` runs the verbs that need no bucket over fixtures/.
 version: '3'
 vars:
   SOURCE: rsync://rsync.example.org/pub/
@@ -26,29 +25,6 @@ includes:
     taskfile: ../../engines/rsync.yml
     flatten: true
 tasks:
-  pipeline:
-    cmds:
-      - {task: clock}
-      - {task: list}
-      - {task: state}
-      - {task: rebuild}
-      - {task: diff}
-      - {task: split}
-      - {task: prepare}
-      - {task: batches}
-      - {task: delete}
-      - {task: reconcile}
-      - {task: index}
-      - {task: smoke}
-      - {task: report}
-      - {task: ping}
-  plan-pipeline:
-    cmds:
-      - {task: clock}
-      - {task: list}
-      - {task: state}
-      - {task: diff}
-      - {task: split}
   tools:
     desc: Every tool the rsync image promises, by version
     cmds:
@@ -61,6 +37,12 @@ tasks:
     desc: Every engine verb that needs no bucket, over fixtures/ copied under .run, inside the image
     vars:
       F: '{{.RUN}}/fixtures'
+      # fixtures/tree is a signed subtree, tl/, the shape of TeX Live's: a tlpdb naming one
+      # package's containers, its sha512 signed by a throwaway key whose public half is the
+      # tree's own keyring, as upstream's is. FP is what a mirror pins as TL_KEY.
+      TREE: '{{.ROOT_DIR}}/fixtures/tree/'
+      LOCAL: rsync --no-h   # a local tree; the engine's daemon-only flags are a usage error here
+      FP: 3505F9E22FF030FE5D9C655A825C376AB4571163
     cmds:
       # list and normalise over a local tree: its two regular files, byte-sorted, and no directory.
       - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
@@ -84,4 +66,24 @@ tasks:
       - task retry CMD='exit 24' RETRY_BASE=0
       - '! task retry CMD=''exit 5'' RETRY_BASE=0 2>/dev/null'
       - '! task retry CMD=''exit 3'' RETRY_BASE=0 2>/dev/null'
+      # run-tl: the signed subtree. prepare fetches the control files from the tree and checks
+      # the signed sha512 against the pinned key; fetch stages the batch; verify checks the
+      # signed file it carries, every container against the tlpdb under both of its names
+      # (three sums: the stable and the revision-stamped container, and the doc container),
+      # and, the batch carrying the tlpdb, the decision batch whole. Staged in the engine's
+      # own STAGING: verify's dir is fixed when the include is read, so no call var moves it.
+      - {task: prepare, vars: {RUN: '{{.F}}/run-tl', SOURCE: '{{.TREE}}', RSYNC: '{{.LOCAL}}', TL: tl, TL_KEY: '{{.FP}}'}}
+      - test -f {{.F}}/run-tl/tl/tlpkg/texlive.tlpdb
+      - {task: fetch, vars: {RUN: '{{.F}}/run-tl', SOURCE: '{{.TREE}}', RSYNC: '{{.LOCAL}}', B: '{{.F}}/run-tl/batch-0001.txt'}}
+      - {task: verify, vars: {RUN: '{{.F}}/run-tl', B: '{{.F}}/run-tl/batch-0001.txt', TL: tl, TL_KEY: '{{.FP}}'}}
+      - test "$(wc -l < {{.F}}/run-tl/tl/sums.txt)" -eq 3 && test ! -s {{.F}}/run-tl/tl/missing.txt
+      # A container the tlpdb does not describe cannot pass, whatever its bytes.
+      - '! task verify-refuses 2>/dev/null'
       - 'echo "offline: every check passed"'
+  verify-refuses:
+    desc: verify over a batch naming a container the tlpdb does not describe, after offline staged run-tl; offline expects it to fail
+    vars:
+      R: '{{.RUN}}/fixtures/run-tl'
+    cmds:
+      - {task: fetch, vars: {RUN: '{{.R}}', SOURCE: '{{.ROOT_DIR}}/fixtures/tree/', RSYNC: 'rsync --no-h', B: '{{.R}}/batch-bad.txt'}}
+      - {task: verify, vars: {RUN: '{{.R}}', B: '{{.R}}/batch-bad.txt', TL: tl, TL_KEY: 3505F9E22FF030FE5D9C655A825C376AB4571163}}

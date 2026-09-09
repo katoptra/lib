@@ -1,4 +1,5 @@
-# A consumer of the toolbox with the proton image.
+# A consumer of the toolbox with the proton image. No engine, so the mirror defines the
+# two pipeline verbs itself, from the toolbox's clock, report and ping and its own steps.
 version: '3'
 includes:
   toolbox:
@@ -9,21 +10,19 @@ includes:
       DESC: the proton toolbox, exercised
       IMAGE: ghcr.io/katoptra/toolbox:proton-dev
       LIB_DIR: ../..
-    excludes: [clock]   # a Python engine keeps its own clock
 tasks:
   pipeline:
+    desc: clock -> tools -> report -> ping
     cmds:
       - {task: clock}
       - {task: tools}
       - {task: report}
       - {task: ping}
   plan-pipeline:
+    desc: 'The read-only half: clock -> tools'
     cmds:
       - {task: clock}
       - {task: tools}
-  clock:
-    cmds:
-      - python -c 'import time; print(int(time.time()))'
   tools:
     desc: Every tool the proton image promises, by version
     cmds:

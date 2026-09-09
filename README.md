@@ -17,7 +17,7 @@ flowchart TB
     tf["Taskfile.yml<br/>root vars: SOURCE, BUCKET, HOST<br/>pipeline, plan-pipeline<br/>overrides, if any"]
     opv["op.env<br/>op:// references"]
     rt["render.txt<br/>the committed dry run"]
-    cw["sync.yml, check.yml<br/>ten-line callers"]
+    cw["sync.yml, check.yml<br/>callers of lib's"]
   end
   subgraph lib["katoptra/lib, pinned to v1"]
     tb["toolbox.yml<br/>menu, image, run, op, sync, plan<br/>render, check, clock, ping"]
@@ -28,7 +28,7 @@ flowchart TB
   tf -- "includes, flattened" --> tb
   tf -- "includes, flattened" --> en
   tb -- "runs pipeline inside" --> im
-  cw -- "uses @v1" --> wf
+  cw -- "uses @release SHA" --> wf
   wf -- "task sync / task check" --> tb
 ```
 
@@ -37,7 +37,7 @@ flowchart TB
 | Toolbox | `toolbox.yml` | How a run starts, is contained, resolves secrets, is rendered, checked and reported | Never; it is included as is |
 | Engine | `engines/<transport>.yml` | How bytes move for one transport: rsync to R2, Proton Drive, HTTPS | It lists a verb under `excludes:` and defines its own |
 | Image | `docker/`, `toolchain.lock.toml` | Every tool a run needs, pinned by checksum | Never; it names one in `IMAGE` |
-| Workflows | `.github/workflows`, `.github/actions/toolbox` | How Actions installs the tools and runs `task sync` and `task check` | Never; its callers are ten lines |
+| Workflows | `.github/workflows`, `.github/actions/toolbox` | How Actions installs the tools and runs `task sync` and `task check` | Never; its callers are a few lines each |
 | Mirror | The mirror's own repository | Identity, pipeline order, the exceptions | Always; this is all it holds |
 
 ## What a run looks like
@@ -61,9 +61,11 @@ sequenceDiagram
   C->>C: engine verbs: list, diff, split, batches, reconcile ...
   C->>C: report, then ping
   alt pipeline failed
-    C->>C: report STATUS=failed, then ping-fail
+    C->>C: failed: report STATUS=failed, then ping-fail
+  else the runner cut the run off
+    W->>C: task op -- task failed
   else .run/chain exists
-    W->>D: gh workflow run sync.yml
+    W->>D: gh workflow run, the caller's own file
   end
 ```
 
@@ -74,10 +76,13 @@ Three things the diagram hides:
   plus `HEALTHCHECK_URL`, `GITHUB_STEP_SUMMARY` and `GITHUB_RUN_ID` always, so no value
   ever appears on a command line or in a log.
 - **1Password is read once per run.** One `op run` wraps the whole pipeline, and the
-  fail ping runs inside the same container, so a failed run costs no second read. A
-  mirror without an `op.env` runs on its repository secrets: the reusable workflow
-  exports every inherited secret into the sync step's environment by name, and the ones
-  the mirror lists in `PASS` cross into the container.
+  failure path, `failed`, runs inside the same container, so a failed run costs no
+  second read. The one exception is a run the runner cut off, by the timeout or a
+  cancellation, which never reached its own failure path: the workflow runs `failed`
+  again from outside, one more read on a rare day. A mirror without an `op.env` runs
+  on its repository secrets: the reusable workflow exports every inherited secret into
+  the sync step's environment by name, the ones the mirror lists in `PASS` cross into
+  the container, and the 1Password CLI is not installed at all.
 - **Nothing inside the container reaches the network for task itself.** The image sets
   `TASK_REMOTE_OFFLINE=1` and the mirror's `.task/remote` cache rides in with the repo.
 - **`plan` is `sync` with the read-only half.** It runs `plan-pipeline` instead of
@@ -89,10 +94,9 @@ Three things the diagram hides:
 
 | Name | Kind | Meaning |
 |---|---|---|
-| `pipeline` | task | The full run, in order, inside the image. `sync` calls it. |
-| `plan-pipeline` | task | The read-only half, inside the image. `plan` calls it. |
 | `SOURCE`, `BUCKET`, `HOST` | root vars | The mirror's identity. Engines read them; the library never defaults them. |
 | `NAME`, `DESC`, `IMAGE` | include vars | The menu's title and line, and the image the run happens inside. |
+| `pipeline`, `plan-pipeline` | tasks | The full run and its read-only half, in order, inside the image; `sync` and `plan` call them. An engine supplies both; a mirror with no engine defines them. |
 
 ### What a mirror may define
 
@@ -100,6 +104,7 @@ Three things the diagram hides:
 |---|---|---|
 | `PASS` | include var | Host environment names that cross into the container beside the ones in `op.env`, for a pipeline that reads its environment. Task vars are not environment: they go after `--`, as `task sync -- MAX_BATCHES=8`. |
 | `report-mirror` | task | The mirror's rows of the run summary, after the toolbox's and the engine's. Excluded on the toolbox include. |
+| `smoke-mirror` | task | The mirror's own read-back checks, after the engine's sample. Excluded on the engine include. |
 | `MENU` | include var | Extra lines for the menu, one per mirror-specific verb. |
 | `LIB_DIR` | include var | Where `image-build` finds `docker/`; defaults to `../lib`. |
 | `op.env` | file | `op://` references, one per secret. Absent means the environment is already resolved: on a laptop, whatever is exported; in Actions, the repository's secrets, crossing by the names in `PASS`. |
@@ -117,13 +122,13 @@ call and the menu documents.
 | `plan` | `op -- task plan-pipeline`: the read-only half |
 | `check` | `render`, then diff against `render.txt` |
 | `render-update` | `render`, then accept it as `render.txt` |
-| `render` | `task --dry --force pipeline` inside the image, saved to `.run/render.txt` |
+| `render` | `task --dry --force pipeline` inside the image, over an empty `.run`, saved to `.run/render.txt` |
 | `run -- <cmd>` | Anything inside the image, with the repo at `/work` |
 | `op -- <cmd>` | `run`, wrapped in `op run --env-file=op.env` when the file exists |
 | `image` | Pull `IMAGE`; a no-op while it exists locally |
 | `image-build` | Build `IMAGE` from `LIB_DIR/docker/<variant>.Dockerfile` |
 | `image-clean` | Remove `IMAGE` |
-| `clean` | Delete every ignored file |
+| `clean` | Delete `.run`, `staging` and the Taskfile cache; nothing else |
 
 Inside the image. A mirror or engine may override these when it keeps its own.
 
@@ -134,9 +139,11 @@ Inside the image. A mirror or engine may override these when it keeps its own.
 | `report-engine`, `report-mirror` | Hooks: no-ops here, the engine's and the mirror's rows |
 | `ping` | GET `HEALTHCHECK_URL`; skipped when unset |
 | `ping-fail` | GET `HEALTHCHECK_URL/fail`; skipped when unset |
+| `failed` | The failure path: `report STATUS=failed`, then `ping-fail` |
 
-`sync` runs `pipeline`, and on a failure `report STATUS=failed` then `ping-fail`, all in
-the one container. One table, three layers: the toolbox's rows (when the run started
+`sync` runs `pipeline`, and on a failure `failed`, all in the one container; the
+workflow runs `failed` from outside only for a run the runner cut off. One table, three
+layers: the toolbox's rows (when the run started
 and how long it took, the image, whether the next run is queued), the engine's, the
 mirror's, each a `| Label | value |` line appended to the same file. Every row tolerates
 a missing file, because the report also runs after a failed pipeline.
@@ -150,6 +157,7 @@ an rsync upstream into an S3 bucket, as a list diff and never a local tree.
 
 | Verb | Does |
 |---|---|
+| `pipeline`, `plan-pipeline` | The verbs below in order, and the read-only half of them: `clock`, `list`, `state`, `diff`, `split` |
 | `list` | `rsync --list-only` of `SOURCE`, through `FILTER`, normalised to `.run/upstream.txt` as `path TAB size TAB mtime`, byte-sorted; a listing under `LIST_FLOOR` lines stops the run |
 | `state` | Fetch `.state/applied.txt.xz` from the bucket; a missing one asks `rebuild` |
 | `rebuild` | List the bucket and make the state exactly what it holds at upstream's sizes |
@@ -161,14 +169,17 @@ an rsync upstream into an S3 bucket, as a list diff and never a local tree.
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
 | `reconcile` | In the run that starts in hour 03 UTC, or with `RECONCILE=true`: rebuild the state, then delete what neither upstream, `OWN` nor the state's own directories own |
 | `index` | Hook. Nothing here; a mirror that draws directory pages or a landing page replaces it |
-| `smoke` | Hook. A sample of the run's keys read back through `HOST`, sizes against the listing, and the tlpdb sha512 when `TL` is set |
+| `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing, the tlpdb sha512 when `TL` is set, then `smoke-mirror` |
+| `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
 | `report-engine` | Hook. The engine's rows of the run summary |
 | `retry` | Run a command, retrying rsync's transport exit codes with backoff; 24 is a success |
 
-`normalise`, `batch`, `fetch`, `publish`, `merge`, `checkpoint` and `remove` are the
-verbs those call. A mirror replaces a hook by listing it under `excludes:` on the
-engine include and defining its own; `report-engine` is defined in the toolbox too, as
-a no-op, so an engine consumer's toolbox include excludes it.
+`normalise`, `pull`, `push`, `batch`, `fetch`, `publish`, `merge`, `checkpoint` and
+`remove` are the verbs those call; `pull` and `push` move an xz-compressed key between
+the bucket and `.run`, and a mirror's own verb may call them. A mirror replaces a hook by
+listing it under `excludes:` on the engine include and defining its own; `report-engine`
+is defined in the toolbox too, as a no-op, so an engine consumer's toolbox include
+excludes it.
 
 A mirror sets `SOURCE`, `BUCKET` and `HOST` in its root vars, always. Everything else
 has an inline default in the engine, and a mirror sets only what differs:
@@ -184,11 +195,12 @@ has an inline default in the engine, and a mirror sets only what differs:
 | `TL`, `TL_KEY` | empty | A signed TeX Live subtree and the fingerprint that signs it; empty, no signature checks |
 | `FILTER` | empty | rsync filter arguments that narrow the listing, for a mirror of a subtree |
 | `OWN` | empty | Bucket-root keys the mirror owns, space separated; `reconcile` never deletes them |
-| `INDEX` | empty | The key suffix of the directory pages a mirror's `index` draws, which `reconcile` spares |
+| `INDEX` | empty | The key suffix of the directory pages a mirror's `index` draws; set, `reconcile` spares those pages and every bare directory of the state, their second key |
 
 A var the mirror puts in its root `vars:` is fixed for every run: inside an included
 verb a root value shadows a `KEY=value` from the command line. One the mirror leaves to
-its default is the run's to set, `task sync -- MAX_BATCHES=8 RECONCILE=true`.
+its default is the run's to set, `task sync -- MAX_BATCHES=8 RECONCILE=true`. So a root
+var that restates a default is worse than none: it silences the command line.
 
 A mirror of one signed subtree, shaped like tlnet:
 
@@ -217,28 +229,25 @@ includes:
       NAME: tlnet
       DESC: a daily mirror of TeX Live's tlnet at https://tlnet.ijosh.com/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
-      PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL AWS_REGION
+      PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
     flatten: true
     excludes: [index]
 tasks:
-  pipeline:
-    cmds: [{task: clock}, {task: list}, {task: state}, {task: rebuild}, {task: diff}, {task: split}, {task: prepare}, {task: batches}, {task: delete}, {task: reconcile}, {task: index}, {task: smoke}, {task: report}, {task: ping}]
-  plan-pipeline:
-    cmds: [{task: clock}, {task: list}, {task: state}, {task: diff}, {task: split}]
   index:
     desc: The landing page, dated today, at the bucket root
     cmds:
       - sed "s/DATE/$(date -u +%Y-%m-%d)/" site/index.html | aws s3 cp --content-type text/html --cache-control no-cache - s3://{{.BUCKET}}/index.html
   report-mirror:
+    internal: true
     cmds:
       - 'echo "| Landing page | index.html, dated $(date -u +%Y-%m-%d) |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"'
 ```
 
 `SOURCE` is the archive root and `FILTER` narrows the listing to the subtree, so every
 key keeps its `systems/texlive/tlnet/` prefix. `OWN` keeps `reconcile` off the landing
-page, and `index` is the one hook the mirror fills.
+page, `index` is the one hook the mirror fills, and the pipeline is the engine's.
 
 ### The bucket is the mirror; the state is a cache
 
@@ -264,20 +273,23 @@ A duplicate without `excludes` is a parse error, on purpose.
 
 ```yaml
 includes:
-  toolbox:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml
+  rsync:
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
     flatten: true
-    excludes: [clock]          # a Python engine keeps its own clock
-    vars: {NAME: photos, DESC: ..., IMAGE: ghcr.io/katoptra/toolbox:proton-v1}
+    excludes: [index]          # the mirror draws its own landing page
 tasks:
-  clock:
-    cmds: [python -c 'import time; print(int(time.time()))']
+  index:
+    cmds: [...]
 ```
 
 The rules that keep this honest:
 
 - Keep the name and the meaning. A `verify` that does something other than verify is a
   new verb with its own name, listed in `MENU`.
+- Extend through a hook, never a copy. A mirror that needs the engine's `smoke` and
+  more defines `smoke-mirror`, which `smoke` runs last, rather than excluding `smoke`
+  and pasting it: the copy stops following releases the day it is made. A mirror with a
+  step to add beside `clock` adds a step to its pipeline, not a `clock` of its own.
 - The replacement reads the mirror's root vars, the same as the original did.
 - Override engine verbs and the in-container toolbox verbs. Do not override the host
   side: `sync`, `plan`, `check` and `run` are what the workflows and the menu promise.
@@ -309,15 +321,16 @@ and a `list` that reads an index instead of `rsync --list-only`.
 
 ## Using it in a mirror
 
-A mirror repository holds six things:
+A mirror repository holds seven things:
 
 ```
-Taskfile.yml                  root vars, the two includes, pipeline, plan-pipeline, overrides
+Taskfile.yml                  root vars, the two includes, overrides
 .taskrc.yml                   trusts raw.githubusercontent.com, refetches at most hourly
 op.env                        op:// references only (optional)
 render.txt                    the committed dry run
-.github/workflows/sync.yml    calls katoptra/lib/.github/workflows/sync.yml@v1
-.github/workflows/check.yml   calls katoptra/lib/.github/workflows/check.yml@v1
+.github/workflows/sync.yml    calls katoptra/lib/.github/workflows/sync.yml at a release commit
+.github/workflows/check.yml   calls katoptra/lib/.github/workflows/check.yml at a release commit
+.github/dependabot.yml        bumps the two calls on a lib release
 ```
 
 ```yaml
@@ -336,26 +349,24 @@ includes:
       NAME: ctan
       DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/
       IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
-      PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL AWS_REGION
+      PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
     flatten: true
-tasks:
-  pipeline:
-    cmds: [{task: clock}, {task: list}, {task: state}, {task: rebuild}, {task: diff}, {task: split}, {task: prepare}, {task: batches}, {task: delete}, {task: reconcile}, {task: index}, {task: smoke}, {task: report}, {task: ping}]
-  plan-pipeline:
-    cmds: [{task: clock}, {task: list}, {task: state}, {task: diff}, {task: split}]
 ```
 
-A mirror on another transport includes that transport's engine instead, and a mirror
-with a Python pipeline of its own includes the toolbox alone and defines the verbs its
-`pipeline` names.
+That is a whole mirror: the engine supplies `pipeline` and `plan-pipeline`. The three
+`AWS_*` names are the secrets, on a laptop exported and in Actions the repository's;
+`AWS_REGION` is `auto` in the image. A mirror on another transport includes that
+transport's engine instead, and a mirror with a Python pipeline of its own includes the
+toolbox alone and defines the two pipeline verbs from the toolbox's `clock`, `report`
+and `ping` and its own steps.
 
 ```yaml
 # .taskrc.yml
 remote:
   trusted-hosts: [raw.githubusercontent.com]
-  expiry: 1h
+  cache-expiry: 1h
 ```
 
 ```yaml
@@ -368,7 +379,7 @@ permissions: {contents: read, actions: write}   # the chain step; a called workf
 concurrency: {group: sync, cancel-in-progress: false}
 jobs:
   sync:
-    uses: katoptra/lib/.github/workflows/sync.yml@v1
+    uses: katoptra/lib/.github/workflows/sync.yml@04f7901cf1aa7551bc43db5ff801a225a189c42a # v1.0.2
     with: {vars: '${{ inputs.vars }}'}
     secrets: inherit
 ```
@@ -379,12 +390,26 @@ name: check
 on: {pull_request: {}}
 jobs:
   check:
-    uses: katoptra/lib/.github/workflows/check.yml@v1
+    uses: katoptra/lib/.github/workflows/check.yml@04f7901cf1aa7551bc43db5ff801a225a189c42a # v1.0.2
 ```
 
-A repository whose Actions policy requires a full commit SHA on every `uses:` pins the
-two calls to a release commit instead, `@04f7901cf1aa7551bc43db5ff801a225a189c42a # v1.0.2`,
-and Dependabot bumps them; the include and the image still float at `v1`.
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    groups: {actions: {patterns: ['*']}}
+```
+
+Two pins, one policy. The workflow calls are pinned to a release commit with the
+version in a trailing comment, as an Actions policy that requires a full SHA on every
+`uses:` demands, and Dependabot bumps them; each reusable workflow checks this
+repository out at that same commit for the toolbox action and the lock, so the workflow
+pin is the only Actions-side pin. The include and the image float at `v1`, on purpose:
+moving that tag is how a verb or a tool reaches every mirror on its next run. `timeout-
+minutes` goes in `with:` only when it differs from the workflow's default of 355.
 
 Then `task render-update` once, commit `render.txt`, and `task check` from then on.
 Every pull request that changes what the mirror executes shows up as a diff in
@@ -400,9 +425,11 @@ $ cd ../proton && task image-build && task check
 
 `task image-build` builds the image the example names from `docker/`. `task check`
 renders the example's pipeline inside it and diffs against `render.txt`; `task run --
-task offline` runs the engine's verbs that need no bucket over `fixtures/`. Change a
-verb, run `task render-update` in each example, and the diff in the pull request is the
-review. `CONTRIBUTING.md` has the three rules this repository adds to the org's.
+task offline` runs the engine's verbs that need no bucket over `fixtures/`: the list
+diff, `retry`, and `prepare` and `verify` over a signed subtree whose key is the
+example's own. Change a verb, run `task render-update` in each example, and the diff in
+the pull request is the review. `CONTRIBUTING.md` has the three rules this repository
+adds to the org's.
 
 ## Releasing
 

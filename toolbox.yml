@@ -1,17 +1,18 @@
 # The toolbox: every verb a katoptra mirror has whatever moves its bytes. A mirror
 # includes this file flattened, passes NAME, DESC and IMAGE on the include, keeps its
-# identity in its own root vars, and defines two verbs: pipeline and plan-pipeline,
-# both of which run inside IMAGE. A verb listed under the include's excludes: and
-# defined in the mirror replaces the one here.
+# identity in its own root vars, and has two verbs, pipeline and plan-pipeline, both of
+# which run inside IMAGE: an engine include supplies them, and a mirror with no engine
+# defines them. A verb listed under the include's excludes: and defined in the mirror
+# replaces the one here.
 #
 # Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
 # the mirror's value; defaults go inline), and host-side and in-container verbs share
 # one namespace, so the names below are reserved, and so is the engine vocabulary a
-# second include adds beside them: list, normalise, state, rebuild, diff, split,
-# batches, batch, fetch, publish, merge, checkpoint, remove, delete, reconcile, retry,
-# and the hooks prepare, verify, index, smoke and report-engine. report-engine lives
-# here as a no-op and in every engine, so an engine consumer's toolbox include lists it
-# under excludes:.
+# second include adds beside them: pipeline, plan-pipeline, list, normalise, state,
+# pull, push, rebuild, diff, split, batches, batch, fetch, publish, merge, checkpoint,
+# remove, delete, reconcile, retry, and the hooks prepare, verify, index, smoke,
+# smoke-mirror and report-engine. report-engine lives here as a no-op and in every
+# engine, so an engine consumer's toolbox include lists it under excludes:.
 version: '3'
 
 vars:
@@ -68,7 +69,7 @@ tasks:
           "  task image-clean          Remove it, so the next task pulls or builds again" \
           "  task run -- <cmd>         Run anything inside it, with this repo at /work" \
           "  task op -- <cmd>          Same, with secrets resolved by name from op.env" \
-          "  task clean                Delete .run, the Taskfile cache and every other ignored file" \
+          "  task clean                Delete .run, staging and the Taskfile cache" \
           {{.MENU}} \
           ""
 
@@ -120,20 +121,20 @@ tasks:
         else task run -- {{.CMD}}; fi
 
   clean:
-    desc: Delete every file git ignores
+    desc: Delete .run, the engine's staging tree and the Taskfile cache; nothing else, so a fixture kept in .git/info/exclude survives
     cmds:
-      - git clean -fdX
+      - rm -rf {{.RUN}} {{.ROOT_DIR}}/staging {{.ROOT_DIR}}/.task
 
   # ---- pipeline ----
   # The words after -- are task vars for the pipeline inside the image: task sync --
   # MAX_BATCHES=8 RECONCILE=true. A KEY=value before -- would set a host-side var only.
-  # The report and the fail ping happen inside the same container, so 1Password is read
-  # once per run whatever the outcome; a second op run for the ping would be a second read.
+  # The failure path runs inside the same container, so 1Password is read once per run
+  # whatever the outcome; a second op run for the ping would be a second read.
   sync:
     desc: 'One run, inside the toolbox: task sync -- MAX_BATCHES=8'
     cmds:
       - task: op
-        vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task report STATUS=failed || true; task ping-fail; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
+        vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task failed; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
 
   plan:
     desc: 'The read-only half, inside the toolbox: task plan -- RECONCILE=true'
@@ -149,11 +150,16 @@ tasks:
     # dry run needs no secrets, so no names cross into the container. task writes the
     # rendered commands to stderr; the redirect inside the container folds them into
     # stdout, so the engine's own progress lines on the host's stderr stay out of the file.
+    # An empty directory is mounted over .run, so a var read from it at parse time (an
+    # engine's batch list, say) renders the same from any working tree, a plan just run
+    # included.
     cmds:
       - mkdir -p {{.RUN}}
       - >-
-        {{.ENGINE}} run --rm --user $(id -u):$(id -g) -v "{{.TOP}}":/work -w /work/{{.PREFIX}}
-        -e HOME=/tmp {{.IMAGE}} sh -c 'task --dry --force pipeline 2>&1' > {{.RUN}}/render.txt
+        empty=$(mktemp -d) &&
+        {{.ENGINE}} run --rm --user $(id -u):$(id -g) -v "{{.TOP}}":/work -v "$empty":/work/{{.PREFIX}}.run -w /work/{{.PREFIX}}
+        -e HOME=/tmp {{.IMAGE}} sh -c 'task --dry --force pipeline 2>&1' > {{.RUN}}/render.txt;
+        rc=$?; rmdir "$empty" 2>/dev/null; exit $rc
       - cat {{.RUN}}/render.txt
 
   check:
@@ -186,6 +192,14 @@ tasks:
     cmds:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail"
 
+  # One verb, so the workflow can run it too, for a run the runner cut off: a timeout, a
+  # cancellation, an image that never pulled. sync runs it in the pipeline's own container.
+  failed:
+    desc: 'The failure path: the run summary marked failed, then the fail ping'
+    cmds:
+      - task report STATUS=failed || true
+      - {task: ping-fail}
+
   # One table, three layers: the rows below, then the engine's, then the mirror's, each
   # a "| Label | value |" line appended to the same file. Every row tolerates a missing
   # file, because the report also runs after a failed pipeline.
@@ -200,7 +214,7 @@ tasks:
 
         | | |
         |---|---|
-        | Started | $(date -u -d "@$s" '+%H:%M UTC' 2>/dev/null || date -u -r "$s" '+%H:%M UTC'), took $(( (now - s) / 60 )) min |
+        | Started | $(date -u -d "@$s" '+%H:%M UTC'), took $(( (now - s) / 60 )) min |
         | Image | {{.IMAGE}} |
         | Next run | $(test -f {{.RUN}}/chain && echo "queued now, work remains" || echo "at the schedule") |
         EOF

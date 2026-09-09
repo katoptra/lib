@@ -10,7 +10,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The action is this repository's, pinned to a release commit: a mirror whose Actions
-      # policy requires a full SHA on every uses: rejects a tag here too. Dependabot bumps it.
-      - uses: katoptra/lib/.github/actions/toolbox@a80d19d76766d058e9e10190277525f9d452b21d # v1.0.1
+      # This repository at the commit the caller pinned this workflow to, so the toolbox
+      # action and the lock it reads are the release the workflow is: one pin, not two.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {repository: katoptra/lib, ref: '${{ github.job_workflow_sha }}', path: .lib}
+      - uses: ./.lib/.github/actions/toolbox
+        with: {op: 'false'}   # a dry run needs no secrets
       - run: task check
