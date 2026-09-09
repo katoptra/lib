@@ -1,0 +1,2 @@
+{"type":"progress","name":"hello.txt","transferred":6}
+{"transferredItems":1,"skippedItems":0,"failedItems":1,"failures":[{"name":"hello.txt","error":"upload failed"}]}

@@ -10,10 +10,11 @@ The toolbox every katoptra mirror includes by URL. Read `README.md` for the cont
   mirror's root value.
 - Verb names are reserved across host and container. `plan` is the host-side read-only
   run; an engine's batch planner is `split`. The hooks, `prepare`, `verify`, `index`,
-  `smoke`, `smoke-mirror`, `report-engine` in the engine and `report-mirror` in the
-  toolbox, are the only verbs a mirror redefines, each excluded on the include that
-  defines it; `pipeline` and `plan-pipeline` come from the engine and a mirror excludes
-  them only for another order. `report-engine` exists in both files, so an engine
+  `smoke`, `smoke-mirror`, `report-engine` in the rsync engine, `stage` and `prune` in
+  the proton engine, and `report-mirror` in the toolbox, are the only verbs a mirror
+  redefines, each excluded on the include that defines it; `pipeline` and
+  `plan-pipeline` come from the engine and a mirror excludes them only for another
+  order. `report-engine` exists in both files, so an engine
   consumer excludes it on the toolbox include. Extension is a hook, never a copy: a
   verb that needs more than the engine does gets a `-mirror` hook the engine calls last.
 - A mirror's root var shadows a command-line `KEY=value` inside an included verb, so an
@@ -48,6 +49,14 @@ The toolbox every katoptra mirror includes by URL. Read `README.md` for the cont
   so the container engine's own progress lines never reach `render.txt`.
 - Inside a `sh:` var, `printf -- '-e %s'` prints dashes: task's built-in shell takes
   the `--` as the format. Use `printf '%s %s ' -e "$v"`.
+- Task's built-in shell has no `umask`. A file that must be born 0600 is
+  `install -m 600 /dev/null "$f"` and then written, as the proton engine's `age` does.
+- The proton engine keeps no state of the mirror's in the bucket, only the CLI session,
+  because `filesystem upload` skips a file whose content Proton already holds and
+  `-f create-new-revision` handles one that changed. Every CLI call goes through `pd`,
+  which pushes the session back whatever the exit: the refresh token rotates, and a run
+  that kept a rotated token to itself leaves the next run unable to log in. Two mirrors
+  never share one session for the same reason.
 - Actions pinned to a full SHA with the version in a trailing comment. A mirror pins the
   two reusable workflows that way; each checks this repository out at its own commit
   (`github.job_workflow_sha`) for the toolbox action and the lock, so a workflow pin is
@@ -58,11 +67,14 @@ The toolbox every katoptra mirror includes by URL. Read `README.md` for the cont
 
 ```sh
 cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
-cd examples/proton && task image-build && task run -- task tools && task check
+cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
 ```
 
 A verb change updates the `render.txt` files via `task render-update`; `offline` is
-the engine's own check over `examples/rsync/fixtures/`: the list diff over `run-root`
-and `run-empty`, `retry`'s exit codes, and `prepare` and `verify` over `tree/`, a signed
-subtree whose tlpdb is signed by a throwaway key pinned in the example. Regenerate the
-tree with a new key only to change its shape; the private half was never kept.
+each engine's own check. The rsync one runs over `examples/rsync/fixtures/`: the list
+diff over `run-root` and `run-empty`, `retry`'s exit codes, and `prepare` and `verify`
+over `tree/`, a signed subtree whose tlpdb is signed by a throwaway key pinned in the
+example. Regenerate the tree with a new key only to change its shape; the private half
+was never kept. The proton one runs `confirm` over `examples/proton/fixtures/`, an
+accepting and a refusing upload summary, and the `age` verb round trip with a throwaway
+identity.

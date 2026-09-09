@@ -8,11 +8,14 @@
 # Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
 # the mirror's value; defaults go inline), and host-side and in-container verbs share
 # one namespace, so the names below are reserved, and so is the engine vocabulary a
-# second include adds beside them: pipeline, plan-pipeline, list, normalise, state,
-# pull, push, rebuild, diff, split, batches, batch, fetch, publish, merge, checkpoint,
-# remove, delete, reconcile, retry, and the hooks prepare, verify, index, smoke,
-# smoke-mirror and report-engine. report-engine lives here as a no-op and in every
-# engine, so an engine consumer's toolbox include lists it under excludes:.
+# second include adds beside them. The rsync engine's: pipeline, plan-pipeline, list,
+# normalise, state, pull, push, rebuild, diff, split, batches, batch, fetch, publish,
+# merge, checkpoint, remove, delete, reconcile, retry, and the hooks prepare, verify,
+# index, smoke and smoke-mirror. The proton engine's: session, session-push, seal,
+# session-seal, age, pull, push, pd, destination, upload, confirm, list-folder, trash,
+# empty-trash, empty-trash-pipeline, and the hooks stage and prune. report-engine lives
+# here as a no-op and in every engine, so an engine consumer's toolbox include lists it
+# under excludes:.
 version: '3'
 
 vars:

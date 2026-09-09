@@ -5,8 +5,9 @@
 
 The toolbox every katoptra mirror includes by URL. The rule it enforces: the code that
 starts a run, contains it, resolves its secrets, checks it and reports it lives here,
-once. The code that moves bytes for a transport lives here too, once per engine, and
-`engines/rsync.yml` is the first. A mirror holds only its identity, the order of its
+once. The code that moves bytes for a transport lives here too, once per engine:
+`engines/rsync.yml` for an rsync upstream into a bucket, `engines/proton.yml` for a
+staging tree into Proton Drive. A mirror holds only its identity, the order of its
 pipeline, and the few verbs no other mirror shares.
 
 ## The layers
@@ -266,6 +267,60 @@ so an hourly run costs one listing of upstream and none of the bucket. Two thing
 What a mirror cannot afford to lose is the bucket. Everything else, the state file and the
 staging tree included, is derived from it and from upstream.
 
+### The proton engine
+
+`engines/proton.yml` moves a staging tree into one Proton Drive folder, through the
+official `proton-drive` CLI, for a mirror whose upstream fits in a run: the mirror fills
+`staging/` and the engine does the rest. It keeps nothing of the mirror's in the bucket
+but the CLI session, because the CLI skips a file whose content Proton already holds and
+`-f create-new-revision` makes a revision of one that changed; Proton's version history
+is the history of the mirror.
+
+| Verb | Does |
+|---|---|
+| `pipeline`, `plan-pipeline` | `clock`, `session`, `destination`, `stage`, `upload`, `confirm`, `prune`, `report`, `ping`; and the read-only half, through `stage` |
+| `session` | Pull `.state/session.tar.age` from the bucket, decrypt it with `MIRROR_AGE_IDENTITY`, extract the two session files to `.run/session` |
+| `pd` | Every CLI call: stderr to `.run/pd.err`, then the session sealed back to the bucket when its token rotated, whatever the exit |
+| `destination` | List the parent of `MIRROR_PROTON_DESTINATION` and refuse the run unless exactly one folder of that name exists and its UID is `MIRROR_PROTON_DESTINATION_UID` |
+| `stage` | Hook. The mirror fills `staging/` with what Proton should hold |
+| `upload` | One `filesystem upload -f create-new-revision -d merge -t --json` of `staging/*` into the destination; the summary to `.run/upload.json` |
+| `confirm` | Transferred plus skipped plus failed must equal the staged files plus folders, with no failure; the verdict to `.run/confirm.txt` |
+| `prune` | Hook. Nothing here; a mirror that trashes what its upstream dropped defines it, from `list-folder` and `trash` |
+| `list-folder`, `trash` | A folder's JSON listing to `OUT`; the nodes at `PATHS` to Proton's trash |
+| `session-seal -- <dir>` | Host side: a laptop login's two files, encrypted into the bucket |
+| `empty-trash` | Host side, asks first: everything in Proton's trash, permanently |
+| `report-engine` | Hook. The engine's rows of the run summary |
+
+The engine reads no root var. Its inputs are the environment, by the names every Proton
+mirror's `op.env` carries: `MIRROR_PROTON_DESTINATION` and its `_UID`, `MIRROR_R2_BUCKET`,
+`MIRROR_AGE_IDENTITY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_ENDPOINT_URL_S3`. The session is the one thing to set up by hand: the CLI can only be
+seeded by a browser sign-in, so log in once on a laptop into a directory inside the repo
+and run `task session-seal -- <that directory>`. Two mirrors never share a session; its
+refresh token rotates on every call, and the loser of a race needs a fresh login.
+
+A mirror of every repository under two GitHub owners, shaped like github:
+
+```yaml
+version: '3'
+vars:
+  OWNERS: jshvn katoptra
+includes:
+  toolbox:
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
+    flatten: true
+    excludes: [report-engine, report-mirror]
+    vars: {NAME: github, DESC: a nightly mirror of every repository under jshvn and katoptra into Proton Drive, IMAGE: ghcr.io/katoptra/toolbox:proton-v2}
+  proton:
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml
+    flatten: true
+    excludes: [stage, prune]
+tasks:
+  stage: {cmds: ['# list the repositories, clone each as a mirror, bundle it under {{.STAGING}}/<owner>/']}
+  prune: {cmds: ['# list-folder each owner in Proton; trash the bundles no repository has']}
+  report-mirror: {cmds: ['# the mirror rows']}
+```
+
 ## Overriding a verb
 
 List it under `excludes:` on the include that defines it and define it in the mirror.
@@ -314,7 +369,7 @@ two matrix entries:
 | Variant | Base | Tools | For |
 |---|---|---|---|
 | `rsync` | ubuntu 24.04 | rsync, gnupg, xz, curl, perl, go-task, AWS CLI v2 (s3, sts) | rsync upstreams to R2: ctan, tlnet, cran, cpan |
-| `proton` | python 3.13 slim | proton-drive, age, go-task, boto3, requests, pytest, ruff | Python pipelines: dropbox, photos |
+| `proton` | python 3.13 slim | proton-drive, age, git, go-task, boto3, requests, pytest, ruff, and `s3`, a boto3 get/put | Proton Drive sinks: github through the proton engine, dropbox through its own Python |
 
 An HTTPS engine would be a third row: the same base as `rsync`, curl and the AWS CLI,
 and a `list` that reads an index instead of `rsync --list-only`.

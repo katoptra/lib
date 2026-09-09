@@ -1,0 +1,240 @@
+# The proton engine: how bytes move from a staging tree into one Proton Drive folder, for
+# every mirror that includes this file flattened beside the toolbox. A run restores the
+# Proton CLI session from the bucket, checks that the destination is the folder the vault
+# names, lets the mirror fill the staging tree, uploads it in one CLI call (the CLI skips a
+# file whose content Proton already holds and makes a new revision of one that changed),
+# confirms the upload from the CLI's own summary, lets the mirror prune what its upstream
+# dropped, and reports. Proton's version history is the cloud-side history, so the bucket
+# holds nothing of the mirror's but the session.
+#
+# Read from the environment, by the names every Proton mirror's vault uses:
+# MIRROR_PROTON_DESTINATION (the CLI path of the destination folder, /my-files/GitHub
+# say), MIRROR_PROTON_DESTINATION_UID (its UID, compared on every run before a write),
+# MIRROR_R2_BUCKET, MIRROR_AGE_IDENTITY, and the three AWS_* names boto3 reads, with
+# AWS_ENDPOINT_URL_S3 for the endpoint. Each is a line of op.env, so it crosses into the
+# container by name.
+#
+# Hooks: stage fills STAGING and every mirror defines it; prune trashes what upstream no
+# longer has, and a mirror that wants that defines it. A mirror lists each it defines under
+# excludes: on this include. pipeline and plan-pipeline are the vocabulary in order.
+#
+# Rules this file keeps, as the toolbox does: no vars: default for anything a mirror
+# owns, and the CLI session is written back to the bucket after every CLI call, whatever
+# the exit, because its refresh token rotates and a run that kept a rotated token to
+# itself leaves the next run unable to log in.
+version: '3'
+
+vars:
+  STAGING: '{{.ROOT_DIR}}/staging'
+  SESSION: '{{.ROOT_DIR}}/.run/session'
+  SESSION_KEY: .state/session.tar.age
+  UPLOAD: '{{.ROOT_DIR}}/.run/upload.json'
+  # The CLI with its session as plain files under RUN/session: the image has no keyring.
+  PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file proton-drive
+
+tasks:
+  pipeline:
+    desc: clock -> session -> destination -> stage -> upload -> confirm -> prune -> report -> ping
+    cmds:
+      - {task: clock}
+      - {task: session}
+      - {task: destination}
+      - {task: stage}
+      - {task: upload}
+      - {task: confirm}
+      - {task: prune}
+      - {task: report}
+      - {task: ping}
+
+  plan-pipeline:
+    desc: 'The read-only half: clock -> session -> destination -> stage, then what an upload would carry'
+    cmds:
+      - {task: clock}
+      - {task: session}
+      - {task: destination}
+      - {task: stage}
+      - |
+        find {{.STAGING}} -type f -printf '%s\n' | awk '{ n++; s += $1 } END { printf "plan: %d files, %.1f MB staged\n", n, s / 1e6 }'
+
+  # ---- the session ----
+  session:
+    desc: Restore the Proton CLI session from the bucket into RUN/session
+    cmds:
+      - rm -rf {{.SESSION}} && mkdir -p {{.SESSION}} && chmod 700 {{.SESSION}}
+      - {task: pull, vars: {KEY: '{{.SESSION_KEY}}', OUT: '{{.RUN}}/session.tar.age', MISSING: 'echo "no Proton session at {{.SESSION_KEY}}: log in on a laptop and run task session-seal" >&2; exit 1'}}
+      - {task: age, vars: {MODE: decrypt, IN: '{{.RUN}}/session.tar.age', OUT: '{{.RUN}}/session.tar'}}
+      # The two members the CLI needs, and nothing else the archive might hold.
+      - tar -xf {{.RUN}}/session.tar -C {{.SESSION}} auth-session.json clientUid.json && chmod 600 {{.SESSION}}/*.json
+      - rm -f {{.RUN}}/session.tar {{.RUN}}/session.tar.age
+      - sha256sum {{.SESSION}}/auth-session.json > {{.RUN}}/session.sha
+
+  session-push:
+    desc: Seal RUN/session back into the bucket when the CLI rotated its token since the last push
+    internal: true
+    status: ['sha256sum --status -c {{.RUN}}/session.sha']
+    cmds:
+      - 'echo "session: token rotated, sealing it back to the bucket"'
+      - {task: seal, vars: {DIR: '{{.SESSION}}'}}
+      - sha256sum {{.SESSION}}/auth-session.json > {{.RUN}}/session.sha
+
+  seal:
+    desc: 'The two session files of DIR, tarred and age-encrypted, to the bucket: task seal DIR=.run/pd'
+    requires: {vars: [DIR]}
+    cmds:
+      - defer: rm -f {{.RUN}}/session.tar {{.RUN}}/session.tar.age
+      - mkdir -p {{.RUN}} && tar -cf {{.RUN}}/session.tar -C {{.DIR}} auth-session.json clientUid.json
+      - {task: age, vars: {MODE: encrypt, IN: '{{.RUN}}/session.tar', OUT: '{{.RUN}}/session.tar.age'}}
+      - {task: push, vars: {FILE: '{{.RUN}}/session.tar.age', KEY: '{{.SESSION_KEY}}'}}
+
+  session-seal:
+    desc: 'Encrypt a laptop Proton CLI session into the bucket: task session-seal -- .run/pd'
+    cmds:
+      - {task: op, vars: {ARGS: 'task seal DIR={{.CLI_ARGS}}'}}
+
+  age:
+    desc: age MODE (encrypt or decrypt) IN to OUT with MIRROR_AGE_IDENTITY, which touches disk for the call alone, mode 0600
+    internal: true
+    requires: {vars: [MODE, IN, OUT]}
+    cmds:
+      - |
+        test -n "$MIRROR_AGE_IDENTITY" || { echo "MIRROR_AGE_IDENTITY is unset" >&2; exit 1; }
+        k={{.RUN}}/age.key; mkdir -p {{.RUN}}; install -m 600 /dev/null "$k" && printf '%s\n' "$MIRROR_AGE_IDENTITY" > "$k"
+        rc=0
+        case {{.MODE}} in
+          encrypt) age -r "$(age-keygen -y "$k")" -o {{.OUT}} {{.IN}} || rc=$? ;;
+          decrypt) age -d -i "$k" -o {{.OUT}} {{.IN}} || rc=$? ;;
+          *) echo "age: MODE must be encrypt or decrypt" >&2; rc=2 ;;
+        esac
+        rm -f "$k"; exit $rc
+
+  # ---- the bucket ----
+  pull:
+    desc: KEY from the bucket to OUT; MISSING runs when the bucket has no such key
+    internal: true
+    requires: {vars: [KEY, OUT, MISSING]}
+    cmds:
+      - |
+        rc=0; s3 get {{.KEY}} {{.OUT}} || rc=$?
+        case $rc in 0) ;; 3) {{.MISSING}} ;; *) exit $rc ;; esac
+
+  push:
+    desc: FILE to the bucket's KEY as one PutObject
+    internal: true
+    requires: {vars: [FILE, KEY]}
+    cmds:
+      - s3 put {{.FILE}} {{.KEY}}
+
+  # ---- the CLI ----
+  # Every CLI call goes through here: stderr to RUN/pd.err rather than the public log,
+  # the session pushed back whatever the exit, then the exit judged against OK, the codes
+  # accepted besides 0.
+  pd:
+    desc: One CLI call, ARGS, with the session written back afterwards
+    internal: true
+    requires: {vars: [ARGS]}
+    cmds:
+      - rc=0; {{.PD}} {{.ARGS}} 2> {{.RUN}}/pd.err || rc=$?; echo $rc > {{.RUN}}/pd.rc
+      - {task: session-push}
+      - |
+        rc=$(cat {{.RUN}}/pd.rc)
+        case " {{.OK | default 0}} " in *" $rc "*) exit 0 ;; esac
+        echo "proton-drive exited $rc; its stderr, $(wc -l < {{.RUN}}/pd.err) lines, is in .run/pd.err" >&2; exit $rc
+
+  destination:
+    desc: Refuse the run unless MIRROR_PROTON_DESTINATION resolves to exactly one folder whose UID is MIRROR_PROTON_DESTINATION_UID
+    cmds:
+      - defer: rm -f {{.RUN}}/parent.json
+      - {task: pd, vars: {ARGS: 'filesystem list -j "$(dirname "$MIRROR_PROTON_DESTINATION")" > {{.RUN}}/parent.json'}}
+      # ponytail: the folder is found by basename, so a destination whose own name holds a
+      # slash is unsupported; the CLI escapes one with a backslash and dirname does not.
+      - |
+        python3 - "$(basename "$MIRROR_PROTON_DESTINATION")" "$MIRROR_PROTON_DESTINATION_UID" {{.RUN}}/parent.json <<'PY'
+        import json, sys
+        name, uid, path = sys.argv[1:]
+        unwrap = lambda v: v.get("value") if isinstance(v, dict) else v
+        nodes = json.load(open(path))
+        found = [n for n in nodes if isinstance(n, dict) and unwrap(n.get("name")) == name]
+        if len(found) != 1 or unwrap(found[0].get("type")) != "folder":
+            sys.exit(f"destination: {len(found)} folder(s) of that name among {len(nodes)} entries of the parent; expected exactly one")
+        if not uid or str(unwrap(found[0].get("uid")) or "") != uid:
+            sys.exit("destination: the folder's UID is not the one the vault names")
+        print("destination: the folder and its UID match the vault")
+        PY
+
+  upload:
+    desc: STAGING into the destination in one CLI call; identical files are skipped, changed ones become new revisions; the CLI's summary goes to RUN/upload.json
+    cmds:
+      - 'test -n "$(ls -A {{.STAGING}} 2>/dev/null)" || { echo "upload: staging is empty; stage put nothing there" >&2; exit 1; }'
+      # Exit 1 is the CLI refusing some items and handling the rest; confirm reads the summary.
+      - {task: pd, vars: {ARGS: 'filesystem upload -f create-new-revision -d merge -t --json {{.STAGING}}/* "$MIRROR_PROTON_DESTINATION" > {{.UPLOAD}}', OK: '0 1'}}
+
+  confirm:
+    desc: The CLI's summary must account for every staged file and folder, with no failures; the verdict goes to RUN/confirm.txt
+    cmds:
+      - |
+        files=$(find {{.STAGING}} -type f | wc -l); folders=$(find {{.STAGING}} -mindepth 1 -type d | wc -l)
+        python3 - "$files" "$folders" {{.UPLOAD}} {{.RUN}}/confirm.txt <<'PY'
+        import json, sys
+        files, folders = int(sys.argv[1]), int(sys.argv[2])
+        # The CLI writes progress and its summary as one JSON object per line; the last
+        # line carrying transferredItems is the summary.
+        summary = None
+        for line in open(sys.argv[3]):
+            try:
+                candidate = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(candidate, dict) and "transferredItems" in candidate:
+                summary = candidate
+        if summary is None:
+            sys.exit("confirm: no upload summary in the CLI's output")
+        t, s, f = (int(summary.get(k, 0) or 0) for k in ("transferredItems", "skippedItems", "failedItems"))
+        verdict = f"{t} uploaded as new files or revisions, {s} skipped as identical, {f} failed, of {files} files in {folders} folders staged"
+        ok = f == 0 and t + s == files + folders
+        open(sys.argv[4], "w").write(verdict + ("" if ok else " (not confirmed)") + "\n")
+        print("confirm: " + verdict)
+        sys.exit(0 if ok else 1)
+        PY
+
+  list-folder:
+    desc: The JSON listing of the Proton folder FOLDER to OUT; a folder the CLI cannot list gives an empty one, so a caller prunes nothing
+    internal: true
+    requires: {vars: [FOLDER, OUT]}
+    cmds:
+      - {task: pd, vars: {ARGS: 'filesystem list -j "{{.FOLDER}}" > {{.OUT}} || echo "[]" > {{.OUT}}'}}
+
+  trash:
+    desc: Trash the Proton nodes at PATHS, CLI paths space separated; Proton's trash keeps them
+    status: ['test -z "{{.PATHS}}"']
+    cmds:
+      - {task: pd, vars: {ARGS: 'filesystem trash {{.PATHS}}'}}
+
+  empty-trash:
+    desc: Permanently delete everything in Proton Drive's trash, inside the toolbox; asks first, never scheduled
+    prompt: This permanently deletes everything in Proton Drive trash. Continue?
+    cmds:
+      - {task: op, vars: {ARGS: task empty-trash-pipeline}}
+
+  empty-trash-pipeline:
+    internal: true
+    cmds:
+      - {task: clock}
+      - {task: session}
+      - {task: pd, vars: {ARGS: filesystem empty-trash}}
+
+  # ---- hooks ----
+  stage: {cmds: []}   # the mirror's: fill STAGING with what Proton should hold
+  prune: {cmds: []}   # the mirror's: trash what its upstream no longer has
+
+  report-engine:
+    desc: The engine's rows of the run summary, appended after the toolbox's
+    silent: true
+    cmds:
+      - |
+        staged=$(find {{.STAGING}} -type f 2>/dev/null | wc -l)
+        mb=$(find {{.STAGING}} -type f -printf '%s\n' 2>/dev/null | awk '{ s += $1 } END { printf "%.1f", s / 1e6 }')
+        cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+        | Staged | $staged files, $mb MB |
+        | Proton | $(cat {{.RUN}}/confirm.txt 2>/dev/null || echo "not confirmed this run") |
+        | Session | $(test -f {{.RUN}}/session.sha && echo "restored, and sealed back on rotation" || echo "not restored") |
+        EOF
