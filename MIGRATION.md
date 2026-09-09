@@ -58,7 +58,7 @@ corrections section below the phases, then the phase you are about to run.
   `p5-dropbox` is ticked. The end-state table wants two more green runs; dropbox has no
   schedule, so the owner dispatches them.
 - tlnet (Phase D) is built and gated offline on branch `josh/toolbox`: pull request
-  katoptra/tlnet#2, commit 26c0427, opened 2026-09-09 00:25 UTC. The Taskfile is the D.2
+  katoptra/tlnet#2, commit 26c0427, opened 2026-09-09 00:18 UTC. The Taskfile is the D.2
   shape with `LIST_FLOOR: 8500`, `AWS_REGION: auto` beside the three `R2_*` mappings in
   `env:`, the filter's globs quoted, `index` writing `.run/index.txt` once the landing page
   landed and `report-mirror` reading it; the callers pin `04f7901 # v1.0.2`,
@@ -70,8 +70,17 @@ corrections section below the phases, then the phase you are about to run.
   (`archive/context.doc.tar.xz`), every root installer, updater and tlpdb control file
   present, no symlink lines. Gate D.3.3 (scratch) skipped: no R2 credentials and no
   1Password session in the shell. The compliance block passes, the engine-consumer lines
-  included. The ruleset edit (`check` to `check / check`, ruleset 21669759) and the merge
-  were refused by the permission classifier, as for ctan; the owner does both.
+  included. The ruleset edit (`check` to `check / check`, ruleset 21669759), the merge
+  and the dispatch were refused by the permission classifier; the owner did all three by
+  hand. `check / check` was green in 15 seconds; the squash is 5c1a220 on `main`.
+- tlnet's first run on the new shape, 34295112311, dispatched by the owner at 00:27 UTC,
+  was green in 37 seconds: the image pulled from GHCR, no state file so `rebuild` listed
+  the bucket and matched all 17,000 upstream objects (6.79 GB) by size, so the delta was
+  empty (`0 lines in 0 batches`) and `prepare`, `verify`, the uploads and `smoke`'s
+  read-backs had nothing to do; the state landed at `.state/applied.txt.xz`, `index`
+  re-uploaded the landing page (its stamp reads 00:28 UTC over the domain), ping sent,
+  nothing chained. Hour 00, so no reconcile. The summary's `Signature` row appears only
+  when the delta touches the subtree, which this run's did not.
 
 **Next, in order.**
 
@@ -82,14 +91,12 @@ corrections section below the phases, then the phase you are about to run.
    the migrator's report), confirm the healthcheck saw the 23:58 UTC ping, and dispatch
    two more runs over the following days (`gh workflow run sync.yml -R katoptra/dropbox`,
    then `gh run watch`); the end-state table wants three green. Rollback is B.2.6.
-3. tlnet: rename the ruleset's required check from `check` to `check / check` by hand
-   (https://github.com/katoptra/tlnet/rules/21669759), confirm `check / check` is green on
-   katoptra/tlnet#2, squash-merge it, then outside 03:00 to 04:30 UTC
-   `gh workflow run sync.yml -R katoptra/tlnet` and `gh run watch`; pass is D.3.5. A
-   hand-started run outside hour 03 does not reconcile, so a second hand run with
-   `-f vars='RECONCILE=true'` shows the first orphan count under watch before the 03:30
-   dispatch does it unattended; every orphan should be a key upstream no longer lists, and
-   never `index.html`. Then tick `p5-tlnetc`. Rollback is D.3.6.
+3. tlnet: a second hand run, `gh workflow run sync.yml -R katoptra/tlnet -f
+   vars='RECONCILE=true'`, watched, shows the first orphan count before the 03:30 dispatch
+   reconciles unattended; every orphan should be a key upstream no longer lists, and
+   never `index.html`. The first run with a real delta (the 03:30 one, once upstream
+   moves) is the first to exercise `prepare`, `verify`, the batches and `smoke`'s
+   read-backs: read its summary for the `Signature` row. Rollback is D.3.6.
 4. Phase E.
 
 **What the previous sessions left only on Josh's laptop.** The old `dropbox:toolbox` and
