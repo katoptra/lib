@@ -48,7 +48,7 @@ The toolbox every katoptra mirror includes by URL. Read `README.md` for the cont
 - Actions pinned to a full SHA with the version in a trailing comment. A mirror pins the
   two reusable workflows that way; each checks this repository out at its own commit
   (`github.job_workflow_sha`) for the toolbox action and the lock, so a workflow pin is
-  the one pin. The include and the image float at `v1` by design: moving that tag is
+  the one pin. The include and the image float at `v2` by design: moving that tag is
   the rollout.
 
 ## Verifying a change

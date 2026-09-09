@@ -19,10 +19,10 @@ flowchart TB
     rt["render.txt<br/>the committed dry run"]
     cw["sync.yml, check.yml<br/>callers of lib's"]
   end
-  subgraph lib["katoptra/lib, pinned to v1"]
+  subgraph lib["katoptra/lib, pinned to v2"]
     tb["toolbox.yml<br/>menu, image, run, op, sync, plan<br/>render, check, clock, ping"]
     en["engines/rsync.yml<br/>list, diff, split, batches, reconcile ...<br/>hooks: prepare, verify, index, smoke"]
-    im["ghcr.io/katoptra/toolbox:&lt;variant&gt;-v1<br/>docker/ + toolchain.lock.toml"]
+    im["ghcr.io/katoptra/toolbox:&lt;variant&gt;-v2<br/>docker/ + toolchain.lock.toml"]
     wf[".github/workflows/sync.yml, check.yml<br/>.github/actions/toolbox"]
   end
   tf -- "includes, flattened" --> tb
@@ -222,16 +222,16 @@ env:
   AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
 includes:
   toolbox:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
     excludes: [report-engine, report-mirror]
     vars:
       NAME: tlnet
       DESC: a daily mirror of TeX Live's tlnet at https://tlnet.ijosh.com/
-      IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
+      IMAGE: ghcr.io/katoptra/toolbox:rsync-v2
       PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/rsync.yml
     flatten: true
     excludes: [index]
 tasks:
@@ -274,7 +274,7 @@ A duplicate without `excludes` is a parse error, on purpose.
 ```yaml
 includes:
   rsync:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/rsync.yml
     flatten: true
     excludes: [index]          # the mirror draws its own landing page
 tasks:
@@ -342,16 +342,16 @@ vars:
   HOST: ctan.ijosh.com
 includes:
   toolbox:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
     excludes: [report-engine]
     vars:
       NAME: ctan
       DESC: an hourly mirror of CTAN at https://ctan.ijosh.com/
-      IMAGE: ghcr.io/katoptra/toolbox:rsync-v1
+      IMAGE: ghcr.io/katoptra/toolbox:rsync-v2
       PASS: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL
   rsync:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml
+    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/rsync.yml
     flatten: true
 ```
 
@@ -407,7 +407,7 @@ Two pins, one policy. The workflow calls are pinned to a release commit with the
 version in a trailing comment, as an Actions policy that requires a full SHA on every
 `uses:` demands, and Dependabot bumps them; each reusable workflow checks this
 repository out at that same commit for the toolbox action and the lock, so the workflow
-pin is the only Actions-side pin. The include and the image float at `v1`, on purpose:
+pin is the only Actions-side pin. The include and the image float at `v2`, on purpose:
 moving that tag is how a verb or a tool reaches every mirror on its next run. `timeout-
 minutes` goes in `with:` only when it differs from the workflow's default of 355.
 
