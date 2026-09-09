@@ -1,34 +1,62 @@
-# A consumer of the toolbox with the proton image. No engine, so the mirror defines the
-# two pipeline verbs itself, from the toolbox's clock, report and ping and its own steps.
+# A consumer of the toolbox and the proton engine, with the proton image. Inside this repo
+# the includes are paths; a mirror includes
+# https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml and
+# https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml. The pipeline is
+# the engine's; render.txt, every command of it, is the library's own check of the engine,
+# and `task run -- task offline` runs the verbs that need neither Proton nor a bucket.
 version: '3'
 includes:
   toolbox:
     taskfile: ../../toolbox.yml
     flatten: true
+    excludes: [report-engine]   # the engine's
     vars:
       NAME: example-proton
-      DESC: the proton toolbox, exercised
+      DESC: the proton toolbox and engine, exercised
       IMAGE: ghcr.io/katoptra/toolbox:proton-dev
       LIB_DIR: ../..
+      MENU: '"" "${c}engine -- offline, inside the image${r}" "  task run -- task offline  confirm over fixtures/, and an age round trip"'
+  proton:
+    taskfile: ../../engines/proton.yml
+    flatten: true
+    excludes: [stage]
 tasks:
-  pipeline:
-    desc: clock -> tools -> report -> ping
+  stage:
+    desc: One file in one folder under STAGING, so the pipeline has something to upload
     cmds:
-      - {task: clock}
-      - {task: tools}
-      - {task: report}
-      - {task: ping}
-  plan-pipeline:
-    desc: 'The read-only half: clock -> tools'
-    cmds:
-      - {task: clock}
-      - {task: tools}
+      - rm -rf {{.STAGING}} && mkdir -p {{.STAGING}}/example && printf 'hello\n' > {{.STAGING}}/example/hello.txt
   tools:
     desc: Every tool the proton image promises, by version
     cmds:
       - python --version
       - proton-drive version | head -1
       - age --version
+      - git --version
       - python -c 'import boto3, requests; print(boto3.__version__, requests.__version__)'
       - ruff --version
       - pytest --version
+      - s3 2>&1 | head -1
+  offline:
+    desc: The engine's verbs that need neither Proton nor a bucket, inside the image
+    cmds:
+      # confirm: one file in one folder staged; a summary that accounts for both with no
+      # failure confirms, one naming a failure does not.
+      - {task: stage}
+      - cp {{.ROOT_DIR}}/fixtures/upload-ok.json {{.UPLOAD}}
+      - {task: confirm}
+      - grep -q 'skipped as identical, 0 failed' {{.RUN}}/confirm.txt
+      - cp {{.ROOT_DIR}}/fixtures/upload-failed.json {{.UPLOAD}}
+      - if task confirm >/dev/null 2>&1; then echo "confirm accepted a summary with a failure" >&2; exit 1; fi
+      - grep -q '(not confirmed)' {{.RUN}}/confirm.txt
+      # age: a throwaway identity round-trips a file through the engine's verb, and the
+      # identity file is gone afterwards.
+      - MIRROR_AGE_IDENTITY="$(age-keygen 2>/dev/null)" task age-roundtrip
+      - test ! -e {{.RUN}}/age.key
+      - 'echo "offline: every check passed"'
+  age-roundtrip:
+    desc: encrypt then decrypt RUN/plain.txt through the engine's age verb, and compare
+    cmds:
+      - printf 'round trip\n' > {{.RUN}}/plain.txt
+      - {task: age, vars: {MODE: encrypt, IN: '{{.RUN}}/plain.txt', OUT: '{{.RUN}}/plain.age'}}
+      - {task: age, vars: {MODE: decrypt, IN: '{{.RUN}}/plain.age', OUT: '{{.RUN}}/plain.out'}}
+      - cmp {{.RUN}}/plain.txt {{.RUN}}/plain.out

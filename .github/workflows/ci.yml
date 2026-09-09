@@ -30,6 +30,5 @@ jobs:
         working-directory: examples/${{ matrix.variant }}
         run: task check
       - name: The engine's verbs that need no bucket, over the fixtures
-        if: matrix.variant == 'rsync'
         working-directory: examples/${{ matrix.variant }}
         run: task run -- task offline
