@@ -1,0 +1,12 @@
+name 00texlive.config
+category TLCore
+revision 1
+
+name foo
+category Package
+revision 1
+containersize 20
+containerchecksum 5563e9aaf252fa83eedb79c71736eaafd4888c18c42b3f3cfa231bc81e09a46bfa66915ff39ffde3ecbee96db49d79ea1296eee6b32ed14fc689658383b84276
+doccontainersize 14
+doccontainerchecksum d1c9b5e94e64ba89bbace9ce38ee1ae134f44183f9e997e1821c5d8acdc63f0c4d59d8e660a60c597e4042e48f577ef174f0caa8e5cc60ee09bd2d3d75fa00f3
+

@@ -6,14 +6,14 @@ FROM python:3.13.15-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b60
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
-COPY toolchain.lock.toml /tmp/lock.toml
+COPY toolchain.lock.toml /etc/toolchain.lock.toml
+COPY docker/lock.py /usr/local/bin/lock
 
 # Architecture from the image itself: BuildKit sets TARGETARCH, Apple container does
 # not, and a defaulted arg would install amd64 binaries into an arm64 image.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64|arm64) ;; *) echo "unsupported architecture: $arch" >&2; exit 1 ;; esac; \
-    lock() { python -c "import functools,sys,tomllib; x=tomllib.load(open('/tmp/lock.toml','rb')); print(functools.reduce(lambda d,k: d[k], sys.argv[1].split('.'), x))" "$1"; }; \
     curl -fsSL "$(lock proton_drive_cli.linux_${arch}.url)" -o /tmp/proton-drive; \
     echo "$(lock proton_drive_cli.linux_${arch}.sha512)  /tmp/proton-drive" | sha512sum -c -; \
     install -m 0755 /tmp/proton-drive /usr/local/bin/proton-drive; \

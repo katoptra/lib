@@ -13,16 +13,19 @@
 # the mirror owns and reconcile never deletes, space separated; empty: none), INDEX (the
 # directory-page key suffix an index hook writes; empty: none).
 #
-# Hooks: prepare, verify, index, smoke and report-engine are the verbs a mirror may
-# replace, by listing each under excludes: on this include and defining its own. prepare
-# and verify do nothing until TL_KEY is set; index does nothing here.
+# Hooks: prepare, verify, index, smoke, smoke-mirror and report-engine are the verbs a
+# mirror may replace, by listing each under excludes: on this include and defining its
+# own. prepare and verify do nothing until TL_KEY is set; index and smoke-mirror do
+# nothing here. pipeline and plan-pipeline are the vocabulary in order; a mirror that
+# needs another order excludes and redefines them.
 #
 # Rules this file keeps, as the toolbox does: no vars: default for anything a mirror
 # owns, because a value here shadows the mirror's root value, and every tunable is an
 # inline {{.X | default N}}, because a mirror's root value in turn shadows a KEY=value
 # given on the command line inside the image (task sync -- MAX_BATCHES=8 reaches these
-# verbs only while no vars: block names MAX_BATCHES). The vars below derive from the
-# mirror's or are the engine's own helpers.
+# verbs only while no vars: block names MAX_BATCHES). A var of another name that reads
+# the tunable still sees the command line, so each default is spelled once, below. The
+# rest of the vars derive from the mirror's or are the engine's own helpers.
 version: '3'
 
 vars:
@@ -30,9 +33,16 @@ vars:
   URL: https://{{.HOST}}
   STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
   STAGING: '{{.ROOT_DIR}}/staging'
+  BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'   # batches per run; the rest chain the next run
+  RETRY_S: '{{.RETRY_BASE | default 15}}'       # seconds; a retry sleeps RETRY_S * 2^i plus jitter
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
+  # The keyring is read as a plain file from the same mirror as the signature, so the pinned
+  # fingerprint is the only real check; GOODSIG too, because gpgv reports an expired or
+  # revoked key as VALIDSIG with exit 0. An awk program over gpgv's --status-fd 1 lines,
+  # given the fingerprint as k where it is used, so a call var TL_KEY reaches it.
+  GPGCHECK: '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}'
   # An object's size from the headers of a one-byte ranged read, which costs no bandwidth on
   # a 6.87 GB file and answers where a HEAD does not: Cloudflare streams text/html and sends
   # it no content-length. content-range carries the total, an empty object answers 416, and
@@ -59,6 +69,33 @@ vars:
       { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
 
 tasks:
+  pipeline:
+    desc: clock -> list -> state -> rebuild? -> diff -> split -> prepare -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping
+    cmds:
+      - {task: clock}
+      - {task: list}
+      - {task: state}
+      - {task: rebuild}
+      - {task: diff}
+      - {task: split}
+      - {task: prepare}
+      - {task: batches}
+      - {task: delete}
+      - {task: reconcile}
+      - {task: index}
+      - {task: smoke}
+      - {task: report}
+      - {task: ping}
+
+  plan-pipeline:
+    desc: 'The read-only half: clock -> list -> state -> diff -> split'
+    cmds:
+      - {task: clock}
+      - {task: list}
+      - {task: state}
+      - {task: diff}
+      - {task: split}
+
   # ---- the listing and the state ----
   list:
     desc: List upstream, narrowed by FILTER when set, and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted
@@ -97,17 +134,32 @@ tasks:
     desc: Fetch the state file to RUN/applied.txt; a missing one is rebuilt from a bucket listing (an empty bucket gives an empty state, and the first run fills it)
     cmds:
       - mkdir -p {{.RUN}}
+      # The bucket is the mirror and the state is a cache of it: a missing one costs one
+      # listing, never an upload.
+      - {task: pull, vars: {KEY: '{{.STATE}}', OUT: '{{.RUN}}/applied.txt', MISSING: 'echo "no state at {{.STATE}}: rebuilding it from the bucket" >&2; touch {{.RUN}}/rebuild-now'}}
+
+  pull:
+    desc: An xz-compressed KEY from the bucket, decompressed to OUT; MISSING runs when the bucket has no such key
+    internal: true
+    requires: {vars: [KEY, OUT, MISSING]}
+    cmds:
       # aws s3 ls exits 1 when nothing matches and 0 when the key exists; any other code is
-      # a real error and must not be mistaken for a missing state. The bucket is the mirror
-      # and the state is a cache of it: a missing one costs one listing, never an upload.
+      # a real error and must not be mistaken for a missing key.
       - |
-        rc=0; aws s3 ls {{.S3}}/{{.STATE}} > /dev/null || rc=$?
+        rc=0; aws s3 ls {{.S3}}/{{.KEY}} > /dev/null || rc=$?
         case $rc in
-          0) aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.RUN}}/applied.txt.xz
-             xz -dc {{.RUN}}/applied.txt.xz > {{.RUN}}/applied.txt ;;
-          1) echo "no state at {{.STATE}}: rebuilding it from the bucket" >&2; touch {{.RUN}}/rebuild-now ;;
+          0) aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.KEY}} {{.OUT}}.xz && xz -dc {{.OUT}}.xz > {{.OUT}} ;;
+          1) {{.MISSING}} ;;
           *) exit $rc ;;
         esac
+
+  push:
+    desc: FILE, xz-compressed, to the bucket's KEY as one PutObject; the old object or the new one is in the bucket, never half
+    internal: true
+    requires: {vars: [FILE, KEY]}
+    cmds:
+      - xz -T0 -c {{.FILE}} > {{.FILE}}.xz
+      - aws s3 cp {{.AWS_FLAGS}} {{.FILE}}.xz {{.S3}}/{{.KEY}}
 
   rebuild:
     desc: List the bucket and make the state exactly what is there (a lost state file, or the daily reconcile)
@@ -125,8 +177,7 @@ tasks:
       - >-
         LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 {{.RUN}}/upstream.txt {{.RUN}}/bucket.txt
         | awk -F'\t' -v OFS='\t' '$2 == $4 { print $1, $2, $3 }' > {{.RUN}}/applied.new
-      - xz -T0 -c {{.RUN}}/applied.new > {{.RUN}}/applied.new.xz
-      - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/applied.new.xz {{.S3}}/{{.STATE}}
+      - {task: push, vars: {FILE: '{{.RUN}}/applied.new', KEY: '{{.STATE}}'}}
       - mv {{.RUN}}/applied.new {{.RUN}}/applied.txt
       - rm -f {{.RUN}}/rebuild-now
 
@@ -182,26 +233,22 @@ tasks:
       - task: retry
         vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/tl/files.txt {{.SOURCE}}{{.TL}}/ {{.RUN}}/tl/'}
       - xz -dkf {{.RUN}}/tl/tlpkg/texlive.tlpdb.xz
-      # The keyring is read as a plain file from the same mirror as the signature, so the
-      # pinned fingerprint is the only real check; GOODSIG too, because gpgv reports an
-      # expired or revoked key as VALIDSIG with exit 0.
       - >-
         cd {{.RUN}}/tl/tlpkg && shasum -a 512 -c texlive.tlpdb.sha512 &&
-        gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512
-        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}'
+        gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | awk -v k={{.TL_KEY}} '{{.GPGCHECK}}'
 
   batches:
     desc: Work the first MAX_BATCHES of RUN/batch-NNNN.txt in name order; each commits before the next starts
     vars:
       BATCHES:
-        sh: ls {{.RUN}}/batch-*.txt 2>/dev/null | head -n {{.MAX_BATCHES | default 4}}
+        sh: ls {{.RUN}}/batch-*.txt 2>/dev/null | head -n {{.BATCHES_MAX}}
     cmds:
       - for: {var: BATCHES, split: "\n", as: B}
         task: batch
         vars: {B: '{{.B}}'}
       # Batches past MAX_BATCHES wait for the next run; the chain file asks the workflow to
       # queue it now rather than at the next hour, which is how an empty bucket fills.
-      - test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -le {{.MAX_BATCHES | default 4}} || touch {{.RUN}}/chain
+      - test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -le {{.BATCHES_MAX}} || touch {{.RUN}}/chain
 
   batch:
     internal: true
@@ -234,15 +281,15 @@ tasks:
   verify:
     requires: {vars: [B]}   # public, so a mirror can run it by hand against a canned batch
     status: ['test -z "{{.TL_KEY}}"']   # the no-op hook until a mirror pins a key
-    dir: '{{.STAGING}}'
+    # Each command works from STAGING by its own cd, not dir:, which a path-based include
+    # resolves against the include's directory and no call var can move.
     cmds:
       # Every signed sha512 in this batch (root installers and updaters, the tlpdb) checks
       # against the keyring already pinned by prepare. The while loop's status is the pipeline's.
       - >-
-        cut -f1 {{.B}} | grep -E '^{{.TL}}/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do
+        cd {{.STAGING}} && cut -f1 {{.B}} | grep -E '^{{.TL}}/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do
         (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
-        gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
-        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
+        gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k={{.TL_KEY}} '{{.GPGCHECK}}')
         || exit 1; done
       # Every TL container in this batch must match the checksum the verified tlpdb gives
       # it, under both the names upstream carries: the stable one the tlpdb names and the
@@ -258,7 +305,7 @@ tasks:
       # checked inside the same command that writes them, so no batch is ever checked against
       # the sums left by the batch before it -- fetch empties staging between the two.
       - >-
-        test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
+        cd {{.STAGING}} && { test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
         awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
           /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
           /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
@@ -269,13 +316,13 @@ tasks:
             if (q in want) { print sum "  " q; delete want[q] } }
           END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
         {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
-        shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }
+        shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }; }
       # The decision batch. The tlpdb it carries must be the one verified at the start of
       # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
       # container it names must be in the bucket after this run: the state, plus this
       # batch, minus this run's deletions.
       - >-
-        test ! -f {{.TL}}/tlpkg/texlive.tlpdb || {
+        cd {{.STAGING}} && { test ! -f {{.TL}}/tlpkg/texlive.tlpdb || {
         cmp {{.TL}}/tlpkg/texlive.tlpdb {{.RUN}}/tl/tlpkg/texlive.tlpdb &&
         xz -dc {{.TL}}/tlpkg/texlive.tlpdb.xz | cmp - {{.TL}}/tlpkg/texlive.tlpdb &&
         { cut -f1 {{.RUN}}/applied.txt; cut -f1 {{.B}}; } | LC_ALL=C sort -u
@@ -285,7 +332,7 @@ tasks:
           /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
           /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' {{.TL}}/tlpkg/texlive.tlpdb \
         | LC_ALL=C sort | LC_ALL=C comm -23 - {{.RUN}}/tl/after.txt > {{.RUN}}/tl/missing.txt &&
-        test ! -s {{.RUN}}/tl/missing.txt; }
+        test ! -s {{.RUN}}/tl/missing.txt; }; }
 
   publish:
     internal: true
@@ -318,9 +365,7 @@ tasks:
     set: [pipefail]
     cmds:
       - {task: merge, vars: {B: '{{.B}}'}}
-      - xz -T0 -c {{.RUN}}/applied.new > {{.RUN}}/applied.new.xz
-      # One PutObject; the old file or the new one is in the bucket, never half.
-      - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/applied.new.xz {{.S3}}/{{.STATE}}
+      - {task: push, vars: {FILE: '{{.RUN}}/applied.new', KEY: '{{.STATE}}'}}
       - mv {{.RUN}}/applied.new {{.RUN}}/applied.txt
       - find {{.STAGING}} -mindepth 1 -delete
 
@@ -348,7 +393,7 @@ tasks:
       D: '{{if .D}}{{.D}}{{else}}{{.RUN}}/deleted.txt{{end}}'
     # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
     # still name these containers, so they go only in the hour every batch has landed.
-    status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES | default 4}}']
+    status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
     cmds:
       - {task: remove, vars: {K: '{{.D}}'}}
       - {task: checkpoint, vars: {B: '{{.D}}'}}
@@ -363,17 +408,19 @@ tasks:
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
-      # A mirror's own keys are no orphans: the bucket-root keys in OWN, and the directory
-      # pages an index hook draws under two keys when INDEX is set. One key names itself
-      # (the INDEX suffix); the other is a bare directory of the state, indistinguishable
-      # from an upstream path, so the state's own directory set is the list. A path that
-      # stops being a directory upstream leaves the set and is judged as a file.
+      # A mirror's own keys are no orphans: the bucket-root keys in OWN, and, only when
+      # INDEX is set, the directory pages an index hook draws under two keys. One key names
+      # itself (the INDEX suffix); the other is a bare directory of the state,
+      # indistinguishable from an upstream path, so the state's own directory set is the
+      # list. A path that stops being a directory upstream leaves the set and is judged as
+      # a file. Without INDEX both lists are empty: the suffix would otherwise degenerate to
+      # "/" and spare every key that ends in one.
       - >-
-        {{.ANCESTORS}} {{.RUN}}/applied.txt
-        | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt
+        {{if .INDEX}}{{.ANCESTORS}} {{.RUN}}/applied.txt
+        | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt{{else}}: > {{.RUN}}/index-keys.txt{{end}}
       - >-
         cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/'{{if .OWN}} | grep -vxF -f <(printf '%s\n' {{.OWN}}){{end}}
-        | awk -v i="/{{.INDEX}}" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i'
+        {{if .INDEX}}| awk -v i="/{{.INDEX}}" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i'{{end}}
         | LC_ALL=C comm -23 - {{.RUN}}/index-keys.txt
         | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
       - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
@@ -384,7 +431,7 @@ tasks:
     cmds: []
 
   smoke:
-    desc: Read a sample of this run's keys back through the domain, sizes against the listing, and with TL set the tlpdb sha512 against the verified copy; a mirror with more to check replaces it
+    desc: Read a sample of this run's keys back through the domain, sizes against the listing, and with TL set the tlpdb sha512 against the verified copy; then the mirror's own checks, smoke-mirror
     vars:
       # The check below that names /timestamp asks for it only once the state says it landed.
       # It rides the decision batch, the last one, so a first fill capped at MAX_BATCHES has
@@ -407,8 +454,15 @@ tasks:
       # MAX_BATCHES has not published this hour's copy yet and has nothing to compare.
       - >-
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
-        test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES | default 4}} ||
+        test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}} ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
+      # A called task sees none of its caller's call vars, so the three a check reads are
+      # handed on; in a run they are the values above, and an offline check passes its own.
+      - {task: smoke-mirror, vars: {RUN: '{{.RUN}}', STAGING: '{{.STAGING}}', URL: '{{.URL}}'}}
+
+  smoke-mirror:
+    desc: A hook, empty here; a mirror with more to read back than the sample replaces it, and smoke runs it last
+    cmds: []
 
   report-engine:
     desc: The engine's rows of the run summary, appended after the toolbox's
@@ -419,7 +473,7 @@ tasks:
         gb() { test -f "$1" && awk -F'\t' '{ s += $2 } END { printf "%.2f", s / 1e9 }' "$1" || echo 0.00; }
         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(gb {{.RUN}}/upstream.txt) GB upstream, at [{{.URL}}/]({{.URL}}/) |
-        | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES | default 4}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next run" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
+        | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.BATCHES_MAX}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next run" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(awk '/^upload:/ { n++ } END { print n + 0 }' {{.RUN}}/publish.txt 2>/dev/null || echo 0) uploaded |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && echo "$(gb {{.RUN}}/bucket.txt) GB in $(n {{.RUN}}/bucket.txt) objects (reconciled)" || echo "not measured this run"){{if .CEILING_GB}} of the {{.CEILING_GB}} GB ceiling{{end}} |
@@ -435,5 +489,5 @@ tasks:
           rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
           case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
           test $i -lt 5 || break
-          s=$(({{.RETRY_BASE | default 15}} * 2 ** i + RANDOM % (2 * {{.RETRY_BASE | default 15}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+          s=$(({{.RETRY_S}} * 2 ** i + RANDOM % (2 * {{.RETRY_S}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
         done; exit $rc

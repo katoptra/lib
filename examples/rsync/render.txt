@@ -16,18 +16,17 @@ task: [normalise] awk '
 | LC_ALL=C sort > /work/examples/rsync/.run/upstream.txt
 task: [normalise] test "$(wc -l < /work/examples/rsync/.run/upstream.txt)" -gt 1
 task: [state] mkdir -p /work/examples/rsync/.run
-task: [state] rc=0; aws s3 ls s3://example/.state/applied.txt.xz > /dev/null || rc=$?
+task: [pull] rc=0; aws s3 ls s3://example/.state/applied.txt.xz > /dev/null || rc=$?
 case $rc in
-  0) aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 s3://example/.state/applied.txt.xz /work/examples/rsync/.run/applied.txt.xz
-     xz -dc /work/examples/rsync/.run/applied.txt.xz > /work/examples/rsync/.run/applied.txt ;;
+  0) aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 s3://example/.state/applied.txt.xz /work/examples/rsync/.run/applied.txt.xz && xz -dc /work/examples/rsync/.run/applied.txt.xz > /work/examples/rsync/.run/applied.txt ;;
   1) echo "no state at .state/applied.txt.xz: rebuilding it from the bucket" >&2; touch /work/examples/rsync/.run/rebuild-now ;;
   *) exit $rc ;;
 esac
 
 task: [rebuild] { aws s3 ls --recursive s3://example/ || test $? -eq 1; } | awk '{ if (match($0, /^[^ ]+ +[^ ]+ +[0-9]+ /)) print substr($0, RLENGTH + 1) "\t" $3 }' | LC_ALL=C sort > /work/examples/rsync/.run/bucket.txt
 task: [rebuild] LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 /work/examples/rsync/.run/upstream.txt /work/examples/rsync/.run/bucket.txt | awk -F'\t' -v OFS='\t' '$2 == $4 { print $1, $2, $3 }' > /work/examples/rsync/.run/applied.new
-task: [rebuild] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
-task: [rebuild] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [rebuild] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [rebuild] rm -f /work/examples/rsync/.run/rebuild-now
 task: [diff] LC_ALL=C comm -13 /work/examples/rsync/.run/applied.txt /work/examples/rsync/.run/upstream.txt > /work/examples/rsync/.run/changed.txt
@@ -60,7 +59,7 @@ task: [retry] for i in 1 2 3 4 5; do
 done; exit $rc
 
 task: [prepare] xz -dkf /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb.xz
-task: [prepare] cd /work/examples/rsync/.run/tl/tlpkg && shasum -a 512 -c texlive.tlpdb.sha512 && gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* $/{v=1} END{exit !(g&&v)}'
+task: [prepare] cd /work/examples/rsync/.run/tl/tlpkg && shasum -a 512 -c texlive.tlpdb.sha512 && gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | awk -v k= '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}'
 task: [fetch] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [fetch] cut -f1  > /work/examples/rsync/.run/files.txt
 task: [retry] for i in 1 2 3 4 5; do
@@ -70,8 +69,8 @@ task: [retry] for i in 1 2 3 4 5; do
   s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
 
-task: [verify] cut -f1  | grep -E '^/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" && gpgv --status-fd 1 --keyring /work/examples/rsync/.run/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* $/{v=1} END{exit !(g&&v)}') || exit 1; done
-task: [verify] test "$(grep -c '^/archive/' )" = 0 || { awk -F'\t' -v TL="" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
+task: [verify] cd /work/examples/rsync/staging && cut -f1  | grep -E '^/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" && gpgv --status-fd 1 --keyring /work/examples/rsync/.run/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k= '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}') || exit 1; done
+task: [verify] cd /work/examples/rsync/staging && { test "$(grep -c '^/archive/' )" = 0 || { awk -F'\t' -v TL="" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
   /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
   /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
   /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
@@ -80,18 +79,18 @@ task: [verify] test "$(grep -c '^/archive/' )" = 0 || { awk -F'\t' -v TL="" 'NR 
     if (p in want) { print sum "  " p; delete want[p] }
     if (q in want) { print sum "  " q; delete want[q] } }
   END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
- /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb > /work/examples/rsync/.run/tl/sums.txt && shasum -a 512 -c --quiet /work/examples/rsync/.run/tl/sums.txt; }
-task: [verify] test ! -f /tlpkg/texlive.tlpdb || { cmp /tlpkg/texlive.tlpdb /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb && xz -dc /tlpkg/texlive.tlpdb.xz | cmp - /tlpkg/texlive.tlpdb && { cut -f1 /work/examples/rsync/.run/applied.txt; cut -f1 ; } | LC_ALL=C sort -u | LC_ALL=C comm -23 - /work/examples/rsync/.run/deleted.txt > /work/examples/rsync/.run/tl/after.txt && awk -v TL="" '/^name /{n=$2}
+ /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb > /work/examples/rsync/.run/tl/sums.txt && shasum -a 512 -c --quiet /work/examples/rsync/.run/tl/sums.txt; }; }
+task: [verify] cd /work/examples/rsync/staging && { test ! -f /tlpkg/texlive.tlpdb || { cmp /tlpkg/texlive.tlpdb /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb && xz -dc /tlpkg/texlive.tlpdb.xz | cmp - /tlpkg/texlive.tlpdb && { cut -f1 /work/examples/rsync/.run/applied.txt; cut -f1 ; } | LC_ALL=C sort -u | LC_ALL=C comm -23 - /work/examples/rsync/.run/deleted.txt > /work/examples/rsync/.run/tl/after.txt && awk -v TL="" '/^name /{n=$2}
   /^containerchecksum /{print TL "/archive/" n ".tar.xz"}
   /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
   /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' /tlpkg/texlive.tlpdb \
-| LC_ALL=C sort | LC_ALL=C comm -23 - /work/examples/rsync/.run/tl/after.txt > /work/examples/rsync/.run/tl/missing.txt && test ! -s /work/examples/rsync/.run/tl/missing.txt; }
+| LC_ALL=C sort | LC_ALL=C comm -23 - /work/examples/rsync/.run/tl/after.txt > /work/examples/rsync/.run/tl/missing.txt && test ! -s /work/examples/rsync/.run/tl/missing.txt; }; }
 task: [publish] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --exclude timestamp /work/examples/rsync/staging/ s3://example/ | tee -a /work/examples/rsync/.run/publish.txt
 task: [publish] test ! -f /work/examples/rsync/staging/timestamp || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/staging/timestamp s3://example/timestamp | tee -a /work/examples/rsync/.run/publish.txt
 task: [merge] (cd /work/examples/rsync/staging && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > /work/examples/rsync/.run/landed.txt
 task: [merge] awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)'  /work/examples/rsync/.run/applied.txt | cat - <(LC_ALL=C join -t "$(printf '\t')" /work/examples/rsync/.run/landed.txt ) | LC_ALL=C sort > /work/examples/rsync/.run/applied.new
-task: [checkpoint] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
-task: [checkpoint] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [checkpoint] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [checkpoint] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [batches] test "$(ls /work/examples/rsync/.run/batch-*.txt 2>/dev/null | wc -l)" -le 4 || touch /work/examples/rsync/.run/chain
@@ -101,28 +100,27 @@ task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf 
 > "$f.json" && aws s3api delete-objects --bucket example --delete "file://$f.json" | tee -a /work/examples/rsync/.run/publish.txt | { test "$(grep -c Errors)" = 0; }; done
 task: [merge] (cd /work/examples/rsync/staging && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > /work/examples/rsync/.run/landed.txt
 task: [merge] awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' /work/examples/rsync/.run/deleted.txt /work/examples/rsync/.run/applied.txt | cat - <(LC_ALL=C join -t "$(printf '\t')" /work/examples/rsync/.run/landed.txt /work/examples/rsync/.run/deleted.txt) | LC_ALL=C sort > /work/examples/rsync/.run/applied.new
-task: [checkpoint] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
-task: [checkpoint] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [checkpoint] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [checkpoint] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [reconcile] touch /work/examples/rsync/.run/rebuild-now
 task: [rebuild] { aws s3 ls --recursive s3://example/ || test $? -eq 1; } | awk '{ if (match($0, /^[^ ]+ +[^ ]+ +[0-9]+ /)) print substr($0, RLENGTH + 1) "\t" $3 }' | LC_ALL=C sort > /work/examples/rsync/.run/bucket.txt
 task: [rebuild] LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 /work/examples/rsync/.run/upstream.txt /work/examples/rsync/.run/bucket.txt | awk -F'\t' -v OFS='\t' '$2 == $4 { print $1, $2, $3 }' > /work/examples/rsync/.run/applied.new
-task: [rebuild] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
-task: [rebuild] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [rebuild] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [rebuild] rm -f /work/examples/rsync/.run/rebuild-now
-task: [reconcile] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/applied.txt | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > /work/examples/rsync/.run/index-keys.txt
-task: [reconcile] cut -f1 /work/examples/rsync/.run/bucket.txt | grep -vE '^\.state/' | awk -v i="/" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i' | LC_ALL=C comm -23 - /work/examples/rsync/.run/index-keys.txt | LC_ALL=C comm -23 - /work/examples/rsync/.run/paths.txt > /work/examples/rsync/.run/orphans.txt
+task: [reconcile] : > /work/examples/rsync/.run/index-keys.txt
+task: [reconcile] cut -f1 /work/examples/rsync/.run/bucket.txt | grep -vE '^\.state/'  | LC_ALL=C comm -23 - /work/examples/rsync/.run/index-keys.txt | LC_ALL=C comm -23 - /work/examples/rsync/.run/paths.txt > /work/examples/rsync/.run/orphans.txt
 task: [remove] rm -f /work/examples/rsync/.run/del-*; split -l 1000 -a 4 /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/del-
 task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
      printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
 > "$f.json" && aws s3api delete-objects --bucket example --delete "file://$f.json" | tee -a /work/examples/rsync/.run/publish.txt | { test "$(grep -c Errors)" = 0; }; done
 task: [merge] (cd /work/examples/rsync/staging && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > /work/examples/rsync/.run/landed.txt
 task: [merge] awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/applied.txt | cat - <(LC_ALL=C join -t "$(printf '\t')" /work/examples/rsync/.run/landed.txt /work/examples/rsync/.run/orphans.txt) | LC_ALL=C sort > /work/examples/rsync/.run/applied.new
-task: [checkpoint] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
-task: [checkpoint] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [checkpoint] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [checkpoint] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [smoke] {  grep -h '^upload:' /work/examples/rsync/.run/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://example/||' | head -3; } | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }

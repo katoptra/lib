@@ -1,4 +1,4 @@
-task: [clock] python -c 'import time; print(int(time.time()))'
+task: [clock] mkdir -p /work/examples/proton/.run && rm -f /work/examples/proton/.run/chain && date -u '+%s %H %u' > /work/examples/proton/.run/start.txt
 task: [tools] python --version
 task: [tools] proton-drive version | head -1
 task: [tools] age --version
