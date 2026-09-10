@@ -1,5 +1,5 @@
 # Reusable: one mirror, one run. The caller is a workflow_dispatch of a few lines that
-# jshvn/dispatch triggers; it passes `vars` through and inherits its repository secrets.
+# an external scheduler triggers; it passes `vars` through and inherits its repository secrets.
 # 1Password is read once per run: one `op run` resolves op.env around the whole pipeline,
 # failure path included. A mirror without an op.env runs on its repository secrets instead,
 # exported into the sync step's environment and crossing into the container by the names
