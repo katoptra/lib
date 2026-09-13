@@ -62,7 +62,8 @@ tasks:
       - {task: diff, vars: {RUN: '{{.F}}/run-empty'}}
       - {task: merge, vars: {RUN: '{{.F}}/run-empty', STAGING: '{{.F}}/run-empty/staging', B: '{{.F}}/run-empty/changed.txt'}}
       - cmp {{.F}}/run-empty/applied.new {{.F}}/run-empty/applied.txt
-      # retry: 24 is a success, a transport code is retried five times, anything else is final.
+      # retry: 23 and 24 are successes, a transport code is retried five times, anything else is final.
+      - task retry CMD='exit 23' RETRY_BASE=0
       - task retry CMD='exit 24' RETRY_BASE=0
       - '! task retry CMD=''exit 5'' RETRY_BASE=0 2>/dev/null'
       - '! task retry CMD=''exit 3'' RETRY_BASE=0 2>/dev/null'
