@@ -106,6 +106,9 @@ tasks:
       # the report count old lines.
       - rm -f {{.RUN}}/publish.txt {{.RUN}}/orphans.txt
       - mkdir -p {{.RUN}} {{.STAGING}}
+      # -L lists every symlink as its file. One whose target is gone upstream is reported
+      # and skipped, and rsync exits 23 with the rest of the listing intact; retry passes
+      # that. A listing cut short is caught by LIST_FLOOR, not by the exit code.
       - task: retry
         vars: {CMD: '{{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
       - {task: normalise}
@@ -487,12 +490,12 @@ tasks:
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
   retry:
-    desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; exit 24 (file vanished mid-transfer) is a success
+    desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; 23 (a path it could not read, a dangling symlink under -L) and 24 (file vanished mid-transfer) are successes
     cmds:
       - |
         for i in 1 2 3 4 5; do
           rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
-          case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+          case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
           test $i -lt 5 || break
           s=$(({{.RETRY_S}} * 2 ** i + RANDOM % (2 * {{.RETRY_S}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
         done; exit $rc

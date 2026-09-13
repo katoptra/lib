@@ -255,7 +255,7 @@ and `smoke-mirror` do nothing until a mirror fills them.
 | `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; then `smoke-mirror` |
 | `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
 | `report-engine` | Hook. The engine's rows of the run summary |
-| `retry` | Run a command, retrying rsync's transport exit codes with backoff; 24 is a success |
+| `retry` | Run a command, retrying rsync's transport exit codes with backoff; 23 (an unreadable path, skipped) and 24 (a file vanished mid-transfer) are successes |
 
 `normalise`, `pull`, `push`, `batch`, `merge` and `remove` are the verbs those call;
 `pull` and `push` move an xz-compressed key between the bucket and `.run`, and a

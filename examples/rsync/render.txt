@@ -3,7 +3,7 @@ task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.r
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
   rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
-  case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+  case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
   s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
@@ -53,7 +53,7 @@ task: [prepare] mkdir -p /work/examples/rsync/.run/tl
 task: [prepare] printf '%s\n' tlpkg/texlive.tlpdb.xz tlpkg/texlive.tlpdb.sha512 tlpkg/texlive.tlpdb.sha512.asc tlpkg/gpg/pubring.gpg > /work/examples/rsync/.run/tl/files.txt
 task: [retry] for i in 1 2 3 4 5; do
   rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/tl/files.txt rsync://rsync.example.org/pub// /work/examples/rsync/.run/tl/ ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
-  case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+  case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
   s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
@@ -64,7 +64,7 @@ task: [fetch] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [fetch] cut -f1  > /work/examples/rsync/.run/files.txt
 task: [retry] for i in 1 2 3 4 5; do
   rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/files.txt --ignore-missing-args rsync://rsync.example.org/pub/ /work/examples/rsync/staging/ ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
-  case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+  case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
   s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
