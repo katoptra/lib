@@ -33,11 +33,20 @@ COPY --from=fetch /usr/local/bin/proton-drive /usr/local/bin/age /usr/local/bin/
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/s3.py /usr/local/bin/s3
 
+# ponytail: botocore ships 432 service models and s3 calls one, so all but s3, sts and
+# the data-root *.json stay behind. Ceiling: a boto3 client for any other service dies on
+# a model lookup; add it to the keep list. pip leaves once the pins are in: a runtime
+# image has no business installing anything.
 RUN python - <<'PY'
-import subprocess, tomllib
+import pathlib, shutil, subprocess, tomllib
 lock = tomllib.load(open("/etc/toolchain.lock.toml", "rb"))
 pins = [f"{k}=={v}" for t in ("packages", "test_packages") for k, v in lock["python"][t].items()]
 subprocess.check_call(["pip", "install", "--no-cache-dir", "--no-deps", *pins])
+subprocess.check_call(["pip", "uninstall", "-y", "pip"])
+import botocore
+for p in (pathlib.Path(botocore.__file__).parent / "data").iterdir():
+    if p.is_dir() and p.name not in ("s3", "sts"):
+        shutil.rmtree(p)
 PY
 
 RUN python - <<'PY'
@@ -53,6 +62,8 @@ assert lock["age"]["version"] in first(["age", "--version"])
 assert lock["task"]["version"] in subprocess.check_output(["task", "--version"], text=True)
 assert first(["git", "--version"]).startswith("git version 2.")
 assert subprocess.run(["s3"], capture_output=True).returncode == 2   # usage; boto3 imports
+assert subprocess.run(["python", "-m", "pip"], capture_output=True).returncode == 1
+import boto3; boto3.client("s3", region_name="auto", aws_access_key_id="x", aws_secret_access_key="x")
 PY
 
 # Inside a run there is no network for Taskfiles: the mirror's .task/remote cache rides
