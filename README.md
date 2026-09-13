@@ -582,7 +582,7 @@ never touch Docker Hub.
 
 | Variant | Base | Tools | For |
 |---|---|---|---|
-| `rsync` | ubuntu 24.04 | rsync, gnupg, xz, curl, perl (shasum), go-task, AWS CLI v2 trimmed to s3 and sts | rsync upstreams into a bucket: ctan, tlnet |
+| `rsync` | ubuntu 24.04 | rsync, gpgv, xz, curl, perl (shasum), go-task, AWS CLI v2 trimmed to s3 and sts | rsync upstreams into a bucket: ctan, tlnet |
 | `proton` | python 3.13 slim | proton-drive, age, git, go-task, boto3, requests, pytest, ruff, and `s3`, a boto3 get/put | Proton Drive sinks: github through the proton engine, dropbox through its own Python |
 
 Both bind-mount the repository at `/work`, set `TASK_REMOTE_OFFLINE=1` and

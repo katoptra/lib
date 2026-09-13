@@ -21,8 +21,18 @@ jobs:
         run: |
           sh .github/validate-vars.sh --check
           sh docker/gpg-gate-check.sh
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # Layers cached in Actions, one scope per variant; release reads the same scope, so a
+      # tag rebuilds only what the merge changed.
       - name: Build the image the example names
-        run: docker build -t ghcr.io/katoptra/toolbox:${{ matrix.variant }}-dev -f docker/${{ matrix.variant }}.Dockerfile .
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/${{ matrix.variant }}.Dockerfile
+          load: true
+          tags: ghcr.io/katoptra/toolbox:${{ matrix.variant }}-dev
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,scope=${{ matrix.variant }},mode=max
       - name: The example's tools resolve inside the image
         working-directory: examples/${{ matrix.variant }}
         run: task run -- task tools

@@ -35,9 +35,10 @@ RUN set -eu; \
 
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS toolbox
 
-# perl carries shasum. Each RUN deletes its own scratch: a layer keeps what it leaves.
+# perl carries shasum; gpgv alone, since the engine verifies and never signs. Each RUN
+# deletes its own scratch: a layer keeps what it leaves.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      rsync gnupg xz-utils curl ca-certificates perl python3 \
+      rsync gpgv xz-utils curl ca-certificates perl python3 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=fetch /usr/local/bin/task /usr/local/bin/task
 COPY --from=fetch /usr/local/aws-cli /usr/local/aws-cli
