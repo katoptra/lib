@@ -20,6 +20,7 @@ jobs:
         if: matrix.variant == 'rsync'
         run: |
           sh .github/validate-vars.sh --check
+          sh .github/chain-file.sh --check
           sh docker/gpg-gate-check.sh
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       # Layers cached in Actions, one scope per variant; release reads the same scope, so a
