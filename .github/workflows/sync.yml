@@ -70,9 +70,9 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        # The caller's own file name, whatever it is; workflow_ref is owner/repo/.github/workflows/<file>@<ref>.
+        # The caller's own file name, whatever it is, cut from GITHUB_WORKFLOW_REF by chain-file.sh.
         run: |
           if [ -f .run/chain ]; then
-            f="${GITHUB_WORKFLOW_REF##*/}"; gh workflow run "${f%%@*}" --ref "$GITHUB_REF_NAME"
+            gh workflow run "$(sh .lib/.github/chain-file.sh "$GITHUB_WORKFLOW_REF")" --ref "$GITHUB_REF_NAME"
             echo "chained: next run queued" >> "$GITHUB_STEP_SUMMARY"
           fi
