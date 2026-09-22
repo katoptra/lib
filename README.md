@@ -1,9 +1,22 @@
-# lib
+<p align="center">
+  <a href="https://github.com/katoptra">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://katoptra.org/brand/katoptra-mark-dark-224.png">
+      <img src="https://katoptra.org/brand/katoptra-mark-224.png" alt="Katoptra" width="112">
+    </picture>
+  </a>
+</p>
 
-[![ci](https://github.com/katoptra/lib/actions/workflows/ci.yml/badge.svg)](https://github.com/katoptra/lib/actions/workflows/ci.yml)
-[![license](https://img.shields.io/github/license/katoptra/lib)](LICENSE)
+<h1 align="center">lib</h1>
 
-The toolbox every katoptra mirror includes by URL. The rule it enforces: the code that
+<p align="center">The toolbox every katoptra mirror includes by URL.</p>
+
+<p align="center">
+  <a href="https://github.com/katoptra/lib/actions/workflows/ci.yml"><img src="https://github.com/katoptra/lib/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/katoptra/lib" alt="license"></a>
+</p>
+
+The rule it enforces: the code that
 starts a run, contains it, resolves its secrets, checks it and reports it lives here,
 once. The code that moves bytes for a transport lives here too, once per engine:
 `engines/rsync.yml` for an rsync upstream into a bucket, `engines/proton.yml` for a
