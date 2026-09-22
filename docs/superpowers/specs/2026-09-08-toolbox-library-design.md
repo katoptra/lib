@@ -20,8 +20,12 @@ is started, contained, secured, rendered and reported comes from here.
 | Versioning | Semver tags `vX.Y.Z`; a release moves the floating `v<major>` tag and pushes `<variant>-vX.Y.Z` and `<variant>-v<major>` image tags | Consumers pin `v1` once, in the include URL and the image name |
 | Secrets | `op.env` of `op://` references, resolved by `op run` on the host; names cross into the container, never values | Org rule; GitHub secrets still work through the `PASS` var |
 | Workflows | Reusable `sync.yml` and `check.yml` under `.github/workflows`, a composite action that installs task and op at the lock's versions | A mirror's caller workflow is ten lines |
-| Clock | jshvn/dispatch triggers `workflow_dispatch` on each mirror; no `schedule:` in any mirror | One calendar, no 60-day cron shutoff |
+| Clock | katoptra/dispatch triggers `workflow_dispatch` on each mirror; no `schedule:` in any mirror | One calendar, no 60-day cron shutoff |
 | The check | `task check` renders the whole pipeline inside the image with `--dry --force` and diffs it against the committed `render.txt` | Any change to what a mirror executes is a visible diff; this is the one check |
+
+The clock was jshvn/dispatch, a Cloudflare Worker, when this was written; since
+2026-09-21 it is [katoptra/dispatch](https://github.com/katoptra/dispatch), a Go binary on
+a systemd timer. The contract in the row is unchanged.
 
 ## The consumer contract
 

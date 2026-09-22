@@ -36,7 +36,7 @@ flowchart LR
     u2["GitHub, over the API and git"]
     u3["Dropbox, over the API"]
   end
-  sched["A scheduler<br/>workflow_dispatch on a cron"] --> host
+  sched["katoptra/dispatch<br/>workflow_dispatch, on a schedule"] --> host
   subgraph job["One GitHub Actions job per run"]
     host["The runner: task sync"] --> box["The toolbox image: task pipeline"]
   end
@@ -94,7 +94,7 @@ The same path on a laptop and in Actions. On a laptop it starts at `task sync`.
 
 ```mermaid
 sequenceDiagram
-  participant D as A scheduler
+  participant D as katoptra/dispatch
   participant W as sync.yml (reusable)
   participant H as Host: task
   participant O as op run
@@ -573,8 +573,9 @@ Three surfaces, all fed by the toolbox.
   the failure path. A check on the mirror's schedule, with a grace that covers a queued
   run plus a full one, emails when the grace passes without a ping. Nothing sends
   `/start`, so the grace does not cap a run; pause the check before a first fill. Because
-  nothing in a mirror starts a run, the check also watches the scheduler: a cron that
-  stops firing looks exactly like a pipeline that stops finishing.
+  nothing in a mirror starts a run, the check also watches the scheduler,
+  [katoptra/dispatch](https://github.com/katoptra/dispatch): a tick that stops firing
+  looks exactly like a pipeline that stops finishing.
 - **The job summary.** `report` appends one table to the Actions job page in three
   layers, the toolbox's rows, the engine's, the mirror's, all counted from `.run/` and
   never from the log, whose lines are dropped silently past a limit. It is the first
@@ -637,7 +638,8 @@ Two reusable workflows and one composite action. A mirror's callers are a few li
 
 ### `sync.yml`
 
-One mirror, one run. The caller is a `workflow_dispatch` that a scheduler triggers; it
+One mirror, one run. The caller is a `workflow_dispatch` that
+[katoptra/dispatch](https://github.com/katoptra/dispatch) triggers; it
 passes `vars` through and inherits its repository secrets.
 
 ```mermaid
