@@ -179,11 +179,53 @@ tasks:
 
   # ---- inside the toolbox ----
   clock:
-    desc: Record the run's start as "epoch UTC-hour weekday" in .run/start.txt, and forget the last run's chain file
+    desc: Record the run's start epoch in .run/start.txt, and forget the last run's chain file and reconcile decision
     # An engine's batches writes the chain file when work remains, and the workflow
-    # queues the next run on it; a run that works no batches must not inherit one.
+    # queues the next run on it; a run that works no batches must not inherit one, nor a
+    # pipeline without due the last run's .run/reconcile.
     cmds:
-      - mkdir -p {{.RUN}} && rm -f {{.RUN}}/chain && date -u '+%s %H %u' > {{.RUN}}/start.txt
+      - mkdir -p {{.RUN}} && rm -f {{.RUN}}/chain {{.RUN}}/reconcile && date -u +%s > {{.RUN}}/start.txt
+
+  # A reconcile is due by the age of the last one, never by the hour or day a run starts:
+  # the schedule lives outside the mirror and moves. The last one is the start epoch of
+  # the run that finished it, kept at .state/reconciled through the engine's pull and push
+  # (xz under the rsync engine, as its state is); a mirror with no engine that reconciles
+  # defines those two itself. RECONCILE=true forces a reconcile and false skips it; auto,
+  # the default, reconciles once the last is RECONCILE_HOURS old (24, or the mirror's root
+  # var) or there is none on record.
+  due:
+    desc: Decide whether this run reconciles, leaving .run/reconcile when it does; RECONCILE=true always, false never, auto once the last reconcile is RECONCILE_HOURS (24) old
+    cmds:
+      - {task: pull, vars: {KEY: .state/reconciled, OUT: '{{.RUN}}/reconciled', MISSING: ': > {{.RUN}}/reconciled'}}
+      - {task: due-rule}
+
+  due-rule:
+    desc: The rule due applies, over .run/start.txt and .run/reconciled
+    cmds:
+      # Half an hour short of the mark: a daily run starts seconds either side of 24 h after
+      # the one before, and a strict 24 h would reconcile every other day. A last time that
+      # does not read as a number is none; a leading zero would read as octal, so neither
+      # value may carry one.
+      - |
+        rm -f {{.RUN}}/reconcile
+        r={{shellQuote (.RECONCILE | default "auto")}}; h={{.RECONCILE_HOURS | default 24}}
+        now=$(cat {{.RUN}}/start.txt); last=$(cat {{.RUN}}/reconciled 2>/dev/null || true)
+        case $last in ''|0?*|*[!0-9]*) last=0 ;; esac
+        case $h in ''|0*|*[!0-9]*) echo "due: RECONCILE_HOURS is a whole number of hours from 1, not $h" >&2; exit 1 ;; esac
+        case $r in
+          true) touch {{.RUN}}/reconcile ;;
+          false) ;;
+          auto) test $(( now - last )) -lt $(( h * 3600 - 1800 )) || touch {{.RUN}}/reconcile ;;
+          *) echo "due: RECONCILE is true, false or auto" >&2; exit 1 ;;
+        esac
+        test "$last" = 0 && ago="none on record" || ago="$(( (now - last) / 3600 )) h ago"
+        echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f {{.RUN}}/reconcile && echo reconciling || echo not this run)"
+
+  reconciled:
+    desc: Record this run's start at .state/reconciled as the last reconcile; an engine runs it once a reconcile completes
+    cmds:
+      - cp {{.RUN}}/start.txt {{.RUN}}/reconciled
+      - {task: push, vars: {FILE: '{{.RUN}}/reconciled', KEY: .state/reconciled}}
 
   ping:
     desc: Dead man's switch; healthchecks.io emails when its grace passes without this (skipped if HEALTHCHECK_URL is unset)

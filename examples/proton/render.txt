@@ -1,4 +1,4 @@
-task: [clock] mkdir -p /work/examples/proton/.run && rm -f /work/examples/proton/.run/chain && date -u '+%s %H %u' > /work/examples/proton/.run/start.txt
+task: [clock] mkdir -p /work/examples/proton/.run && rm -f /work/examples/proton/.run/chain /work/examples/proton/.run/reconcile && date -u +%s > /work/examples/proton/.run/start.txt
 task: [session] rm -rf /work/examples/proton/.run/session && mkdir -p /work/examples/proton/.run/session && chmod 700 /work/examples/proton/.run/session
 task: [pull] rc=0; s3 get .state/session.tar.age /work/examples/proton/.run/session.tar.age || rc=$?
 case $rc in 0) ;; 3) echo "no Proton session at .state/session.tar.age: log in on a laptop and run task session-seal" >&2; exit 1 ;; *) exit $rc ;; esac

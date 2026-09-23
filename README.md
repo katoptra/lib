@@ -68,7 +68,7 @@ flowchart TB
     cw["sync.yml, check.yml<br/>ten-line callers"]
   end
   subgraph lib["katoptra/lib, at v2"]
-    tb["toolbox.yml<br/>menu, image, run, op, sync, plan, check<br/>clock, report, ping, failed"]
+    tb["toolbox.yml<br/>menu, image, run, op, sync, plan, check<br/>clock, due, reconciled, report, ping, failed"]
     en["engines/rsync.yml, engines/proton.yml<br/>the pipeline vocabulary, one file per transport"]
     im["ghcr.io/katoptra/toolbox:rsync-v2, :proton-v2<br/>docker/, toolchain.lock.toml"]
     wf[".github/workflows/sync.yml, check.yml<br/>.github/actions/toolbox"]
@@ -185,7 +185,9 @@ keeps its own.
 
 | Verb | Does |
 |---|---|
-| `clock` | Write "epoch UTC-hour weekday" to `.run/start.txt` and forget the last run's chain file |
+| `clock` | Write the run's start epoch to `.run/start.txt` and forget the last run's chain file and `.run/reconcile` |
+| `due` | Decide whether this run reconciles, by the age of the last reconcile at `.state/reconciled`; leave `.run/reconcile` when it does. `due-rule` is the rule alone |
+| `reconciled` | Record this run's start at `.state/reconciled`; an engine runs it once a reconcile completes |
 | `report` | Append the run summary to the Actions job page (stdout elsewhere): its own rows, then `report-engine`'s, then `report-mirror`'s |
 | `report-engine`, `report-mirror` | Hooks: no-ops here; the engine's and the mirror's rows |
 | `ping` | GET `HEALTHCHECK_URL`; skipped when unset |
@@ -198,6 +200,27 @@ the toolbox's rows (when the run started and how long it took, the image, whethe
 next run is queued), the engine's, the mirror's. Every row tolerates a missing file,
 because the report also runs after a failed pipeline.
 
+#### Reconcile, by age
+
+A reconcile, the pass that checks the mirror against its destination rather than
+against its own state, is due by the age of the last one and never by when a run starts:
+the schedule lives outside the mirror and can move. `due` runs early in a pipeline that
+reconciles, and the pipeline's reconcile runs only when `.run/reconcile` is there.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `RECONCILE` | `auto` | Set per run: `task sync -- RECONCILE=true`. `true` reconciles, `false` does not, `auto` reconciles once the last is `RECONCILE_HOURS` old or none is on record |
+| `RECONCILE_HOURS` | 24 | Whole hours between reconciles. A mirror that wants another interval sets it in its root vars |
+
+The last reconcile is the start epoch of the run that finished it, at `.state/reconciled`,
+kept through the engine's `pull` and `push`, so under the rsync engine it is
+xz-compressed like the state. The mark is half an hour short of `RECONCILE_HOURS`: a
+daily run starts seconds either side of 24 h after the one before, and a strict 24 h
+would reconcile every other day. A run that fails before its reconcile completes
+records nothing, so the next run is due as well, and so does an rsync run with batches
+still waiting: its reconcile holds for the chained run that lands the last one. A mirror with no engine that
+reconciles defines `pull` and `push` itself.
+
 ### What a mirror gives the toolbox
 
 | Name | Kind | Meaning |
@@ -209,6 +232,8 @@ because the report also runs after a failed pipeline.
 | `MENU` | include var | Extra lines for the menu, one per mirror-specific verb |
 | `report-mirror` | task | The mirror's rows of the run summary. Excluded on the toolbox include |
 | `LIB_DIR` | include var | Where `image-build` finds `docker/`; defaults to `../lib` |
+| `RECONCILE_HOURS` | root var | Hours between reconciles, when not 24. See [Reconcile, by age](#reconcile-by-age) |
+| `pull`, `push` | tasks | What `due` and `reconciled` keep `.state/reconciled` through. An engine supplies both; a mirror with no engine that reconciles defines them |
 | `excludes:` | include key | Library verbs the mirror replaces. See [Changing it](#changing-it) |
 
 ## The engines
@@ -233,12 +258,12 @@ delta, in batches, each committed before the next starts.
 
 ```mermaid
 flowchart LR
-  clock --> list --> state --> rebuild["rebuild<br/>only if the state was missing"] --> diff --> split --> prepare --> batches
+  clock --> due --> list --> state --> rebuild["rebuild<br/>only if the state was missing"] --> diff --> split --> prepare --> batches
   subgraph b["batch, for each of the first MAX_BATCHES"]
     direction LR
     fetch --> verify --> publish --> checkpoint
   end
-  batches --> b --> delete --> reconcile["reconcile<br/>once a day, or RECONCILE=true"] --> index --> smoke --> report --> ping
+  batches --> b --> delete --> reconcile["reconcile<br/>when due"] --> index --> smoke --> report --> ping
   smoke --> sm["smoke-mirror"]
   report --> re["report-engine"] --> rm["report-mirror"]
   classDef hook stroke-dasharray: 5 5
@@ -263,7 +288,7 @@ and `smoke-mirror` do nothing until a mirror fills them.
 | `publish` | `aws s3 cp --recursive` of staging, one PutObject per file, never a destination listing; `timestamp` last |
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
-| `reconcile` | In the run that starts in hour 03 UTC, or with `RECONCILE=true`: rebuild the state, then delete what neither upstream, `OWN` nor the state's own directories own |
+| `reconcile` | When `due` left `.run/reconcile`: rebuild the state, delete what neither upstream, `OWN` nor the state's own directories own, then `reconciled` |
 | `index` | Hook. Nothing here; a mirror that draws directory pages or a landing page replaces it |
 | `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; then `smoke-mirror` |
 | `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
@@ -299,7 +324,8 @@ An hourly run costs one listing of upstream and none of the bucket. Three things
   so a path that vanished upstream between listing and fetch never enters the state, and
   the state never names a key the bucket lacks.
 - **`RECONCILE` is the check on a live mirror.** It rebuilds the state from the bucket on
-  purpose, daily by default, and deletes keys neither upstream nor the state owns.
+  purpose, once every `RECONCILE_HOURS` (24) by default, and deletes keys neither upstream
+  nor the state owns.
 
 What a mirror cannot afford to lose is the bucket. Everything else, the state file and the
 staging tree included, is derived from it and from upstream.
@@ -347,7 +373,7 @@ has an inline default, and a mirror sets only what differs:
 | `BATCH_GB` | 4 | Decimal GB per batch; a larger file is a batch by itself |
 | `MAX_BATCHES` | 4 | Batches per run; the rest chain the next run |
 | `LIST_FLOOR` | 0, no guard | A listing under this many lines is a truncated one, never a deletion list |
-| `RECONCILE` | `auto` | `true`, `false`, or `auto`: the run that started in hour 03 UTC |
+| `RECONCILE`, `RECONCILE_HOURS` | `auto`, 24 | The toolbox's: see [Reconcile, by age](#reconcile-by-age) |
 | `RETRY_BASE` | 15 | Seconds; the retry sleeps are `RETRY_BASE * 2^i` plus jitter |
 | `TL`, `TL_KEY` | empty | A signed TeX Live subtree and the fingerprint that signs it; empty, no signature checks |
 | `FILTER` | empty | rsync filter arguments that narrow the listing, for a mirror of a subtree |
@@ -448,9 +474,10 @@ no history in the bucket**: a stale copy holds a rotated-out token and cannot be
 A mirror whose logic is a program of its own includes the toolbox alone and defines
 `pipeline` and `plan-pipeline` from the toolbox's `clock`, `report` and `ping` and its own
 steps. dropbox is that shape: each step is one `python -m migrator <command>`, the
-Taskfile owns the order, the Python owns every decision, and the `proton` image supplies
-the interpreter, boto3 and the CLI. Such a mirror fills `report-mirror` with its own
-report and nothing else of the toolbox's changes.
+Taskfile owns the order, the Python owns every decision but when to reconcile, which is
+the toolbox's `due`, and the `proton` image supplies the interpreter, boto3 and the CLI.
+Such a mirror fills `report-mirror` with its own report and nothing else of the
+toolbox's changes.
 
 ## Secrets
 
@@ -533,6 +560,7 @@ Every mirror has one S3-compatible bucket. What it holds depends on the engine.
 | rsync, a mirror's own | `.state/indexed.txt.xz`, `index.html` | ctan's record of what its directory pages show; tlnet's landing page, spared by `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. The only key |
 | a pipeline of its own | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | dropbox's state and its dated copies; a lifecycle rule expires the history |
+| any that reconciles | `.state/reconciled` | The start epoch of the run that last completed a reconcile, through the engine's `push`: xz under rsync, with no `.xz` suffix, plain under dropbox |
 
 `.state/` is the one reserved prefix, chosen because no upstream in the org has a
 dot-prefixed root entry.

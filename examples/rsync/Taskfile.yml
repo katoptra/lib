@@ -67,6 +67,28 @@ tasks:
       - task retry CMD='exit 24' RETRY_BASE=0
       - '! task retry CMD=''exit 5'' RETRY_BASE=0 2>/dev/null'
       - '! task retry CMD=''exit 3'' RETRY_BASE=0 2>/dev/null'
+      # due-rule, a run starting at 1000000: auto reconciles with none on record and at 23 h
+      # 50 min, not at under 3 h, unless RECONCILE_HOURS is 2 or RECONCILE=true; false never
+      # does. A RECONCILE that is none of the three stops the run, and so does an hour count
+      # that is not a whole number from 1 (08 would read as octal).
+      - mkdir -p {{.F}}/due && echo 1000000 > {{.F}}/due/start.txt
+      - {task: due-rule, vars: {RUN: '{{.F}}/due'}}
+      - test -f {{.F}}/due/reconcile
+      - {task: due-rule, vars: {RUN: '{{.F}}/due', RECONCILE: 'false'}}
+      - test ! -f {{.F}}/due/reconcile
+      - echo 914000 > {{.F}}/due/reconciled
+      - {task: due-rule, vars: {RUN: '{{.F}}/due'}}
+      - test -f {{.F}}/due/reconcile
+      - echo 990000 > {{.F}}/due/reconciled
+      - {task: due-rule, vars: {RUN: '{{.F}}/due'}}
+      - test ! -f {{.F}}/due/reconcile
+      - {task: due-rule, vars: {RUN: '{{.F}}/due', RECONCILE_HOURS: 2}}
+      - test -f {{.F}}/due/reconcile
+      - {task: due-rule, vars: {RUN: '{{.F}}/due', RECONCILE: 'true'}}
+      - test -f {{.F}}/due/reconcile
+      - task due-refuses R=yes 2>&1 | grep -q 'RECONCILE is true, false or auto'
+      - task due-refuses H=abc 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
+      - task due-refuses H=08 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
       # run-tl: the signed subtree. prepare fetches the control files from the tree and checks
       # the signed sha512 against the pinned key; fetch stages the batch; verify checks the
       # signed file it carries, every container against the tlpdb under both of its names
@@ -81,6 +103,10 @@ tasks:
       # A container the tlpdb does not describe cannot pass, whatever its bytes.
       - '! task verify-refuses 2>/dev/null'
       - 'echo "offline: every check passed"'
+  due-refuses:
+    desc: due-rule over offline's due fixture with RECONCILE R and RECONCILE_HOURS H; offline expects it to refuse
+    cmds:
+      - {task: due-rule, vars: {RUN: '{{.RUN}}/fixtures/due', RECONCILE: '{{.R | default "auto"}}', RECONCILE_HOURS: '{{.H | default 24}}'}}
   verify-refuses:
     desc: verify over a batch naming a container the tlpdb does not describe, after offline staged run-tl; offline expects it to fail
     vars:
