@@ -2,16 +2,17 @@
 # mirror that includes this file flattened beside the toolbox. A run is a list diff, never
 # a local tree: list upstream, diff it against the state file the last run left in the
 # bucket, fetch the delta in batches of BATCH_GB, upload, checkpoint the state once per
-# batch, delete what left upstream, and once a day reconcile the bucket against the
-# state. The mirror orders these verbs in its pipeline and holds its identity in root vars.
+# batch, delete what left upstream, and reconcile the bucket against the state when the
+# toolbox's due says one is due (RECONCILE and RECONCILE_HOURS are its vars). The mirror
+# orders these verbs in its pipeline and holds its identity in root vars.
 #
 # Read from the mirror: SOURCE, BUCKET, HOST (required); and, each with an inline default,
 # CEILING_GB (0: no ceiling), BATCH_GB (4), MAX_BATCHES (4), LIST_FLOOR (0: no
-# truncated-listing guard), RECONCILE (auto), RETRY_BASE (15 s), TL and TL_KEY (a signed
-# TeX Live subtree and the fingerprint that signs it; empty: no signature checks), FILTER
-# (rsync filter arguments for the listing; empty: the whole tree), OWN (bucket-root keys
-# the mirror owns and reconcile never deletes, space separated; empty: none), INDEX (the
-# directory-page key suffix an index hook writes; empty: none).
+# truncated-listing guard), RETRY_BASE (15 s), TL and TL_KEY (a signed TeX Live subtree
+# and the fingerprint that signs it; empty: no signature checks), FILTER (rsync filter
+# arguments for the listing; empty: the whole tree), OWN (bucket-root keys the mirror owns
+# and reconcile never deletes, space separated; empty: none), INDEX (the directory-page
+# key suffix an index hook writes; empty: none).
 #
 # Hooks: prepare, verify, index, smoke, smoke-mirror and report-engine are the verbs a
 # mirror may replace, by listing each under excludes: on this include and defining its
@@ -70,9 +71,10 @@ vars:
 
 tasks:
   pipeline:
-    desc: clock -> list -> state -> rebuild? -> diff -> split -> prepare -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping
+    desc: clock -> due -> list -> state -> rebuild? -> diff -> split -> prepare -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping
     cmds:
       - {task: clock}
+      - {task: due}
       - {task: list}
       - {task: state}
       - {task: rebuild}
@@ -165,7 +167,7 @@ tasks:
       - aws s3 cp {{.AWS_FLAGS}} {{.FILE}}.xz {{.S3}}/{{.KEY}}
 
   rebuild:
-    desc: List the bucket and make the state exactly what is there (a lost state file, or the daily reconcile)
+    desc: List the bucket and make the state exactly what is there (a lost state file, or a reconcile)
     status: ['test ! -f {{.RUN}}/rebuild-now']
     set: [pipefail]
     cmds:
@@ -281,7 +283,7 @@ tasks:
       # symlink into its file. A path that vanished since the listing is skipped: it never
       # lands in staging, so merge (the batch joined against what staging holds) drops it
       # from the state rather than recording it; any object it once had in the bucket
-      # waits for the daily reconcile to clean up. No --partial: staging is emptied every
+      # waits for the next reconcile to clean up. No --partial: staging is emptied every
       # batch, so there is nothing to resume, and a partial file must never reach the bucket.
       - task: retry
         vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/files.txt --ignore-missing-args {{.SOURCE}} {{.STAGING}}/'}
@@ -407,12 +409,11 @@ tasks:
       - {task: checkpoint, vars: {B: '{{.D}}'}}
 
   reconcile:
-    desc: Rebuild the state from a bucket listing, then delete keys that neither upstream nor .state/ owns
-    # auto is the run that started in hour 03 UTC, one a day. A run held in the dispatch
-    # queue behind a long one can start in 04 and skip the day; the next day's run does it,
-    # and RECONCILE=true asks for it by hand.
-    status:
-      - 'test {{shellQuote (.RECONCILE | default "auto")}} = false || { test {{shellQuote (.RECONCILE | default "auto")}} = auto && test "$(cut -d" " -f2 {{.RUN}}/start.txt)" != 03; }'
+    desc: When due left .run/reconcile, rebuild the state from a bucket listing, delete keys that neither upstream nor .state/ owns, and record the reconcile
+    # Not while a batch waits for a later run: delete would hold the orphans back, so the run
+    # stays due and the chained run that lands the last batch reconciles. A run that fails
+    # before the last line records nothing either, so the next run is due too.
+    status: ['test ! -f {{.RUN}}/reconcile || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
@@ -432,6 +433,7 @@ tasks:
         | LC_ALL=C comm -23 - {{.RUN}}/index-keys.txt
         | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
       - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
+      - {task: reconciled}
 
   # ---- after the bytes moved ----
   index:

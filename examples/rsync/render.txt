@@ -1,4 +1,25 @@
-task: [clock] mkdir -p /work/examples/rsync/.run && rm -f /work/examples/rsync/.run/chain && date -u '+%s %H %u' > /work/examples/rsync/.run/start.txt
+task: [clock] mkdir -p /work/examples/rsync/.run && rm -f /work/examples/rsync/.run/chain /work/examples/rsync/.run/reconcile && date -u +%s > /work/examples/rsync/.run/start.txt
+task: [pull] rc=0; aws s3 ls s3://example/.state/reconciled > /dev/null || rc=$?
+case $rc in
+  0) aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 s3://example/.state/reconciled /work/examples/rsync/.run/reconciled.xz && xz -dc /work/examples/rsync/.run/reconciled.xz > /work/examples/rsync/.run/reconciled ;;
+  1) : > /work/examples/rsync/.run/reconciled ;;
+  *) exit $rc ;;
+esac
+
+task: [due-rule] rm -f /work/examples/rsync/.run/reconcile
+r=auto; h=24
+now=$(cat /work/examples/rsync/.run/start.txt); last=$(cat /work/examples/rsync/.run/reconciled 2>/dev/null || true)
+case $last in ''|0?*|*[!0-9]*) last=0 ;; esac
+case $h in ''|0*|*[!0-9]*) echo "due: RECONCILE_HOURS is a whole number of hours from 1, not $h" >&2; exit 1 ;; esac
+case $r in
+  true) touch /work/examples/rsync/.run/reconcile ;;
+  false) ;;
+  auto) test $(( now - last )) -lt $(( h * 3600 - 1800 )) || touch /work/examples/rsync/.run/reconcile ;;
+  *) echo "due: RECONCILE is true, false or auto" >&2; exit 1 ;;
+esac
+test "$last" = 0 && ago="none on record" || ago="$(( (now - last) / 3600 )) h ago"
+echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f /work/examples/rsync/.run/reconcile && echo reconciling || echo not this run)"
+
 task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/orphans.txt
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
@@ -123,6 +144,9 @@ task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rs
 task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [checkpoint] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [checkpoint] find /work/examples/rsync/staging -mindepth 1 -delete
+task: [reconciled] cp /work/examples/rsync/.run/start.txt /work/examples/rsync/.run/reconciled
+task: [push] xz -T0 -c /work/examples/rsync/.run/reconciled > /work/examples/rsync/.run/reconciled.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/reconciled.xz s3://example/.state/reconciled
 task: [smoke] {  grep -h '^upload:' /work/examples/rsync/.run/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://example/||' | head -3; } | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | while IFS="$(printf '\t')" read -r k u; do want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' /work/examples/rsync/.run/upstream.txt); got=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -r 0-0 -D - -o /dev/null "https://example.katoptra.org/$u" | awk 'tolower($1) == "content-range:" { split($3, a, "/"); r = a[2] }

@@ -33,6 +33,8 @@ each entry is a verified go-task or platform fact that cost a session to find.
   so the container engine's own progress lines never reach `render.txt`.
 - Inside a `sh:` var, `printf -- '-e %s'` prints dashes: task's built-in shell takes
   the `--` as the format. Use `printf '%s %s ' -e "$v"`.
+- Task's built-in shell runs every command under `set -e`, and an assignment takes its
+  command substitution's exit: `x=$(cat missing)` stops the command (verified, 3.53.1).
 - Task's built-in shell has no `umask`. A file that must be born 0600 is
   `install -m 600 /dev/null "$f"` and then written, as the proton engine's `age` does.
 - Every Proton CLI call goes through `pd`, which pushes the session back whatever the
