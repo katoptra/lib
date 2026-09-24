@@ -2,9 +2,8 @@
 
 The toolbox every katoptra mirror includes by URL. `README.md` is the manual: the layers,
 the verbs, the engines, secrets, storage, the images, the workflows, and how a mirror
-uses and changes any of it. `docs/superpowers/specs/2026-09-08-toolbox-library-design.md`
-is the record of what was decided when. This file is what a change must not break:
-each entry is a verified go-task or platform fact that cost a session to find.
+uses and changes any of it. This file is what a change must not break: each entry is a
+verified go-task or platform fact that cost a session to find.
 
 ## Hazards
 
