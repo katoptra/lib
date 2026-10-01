@@ -187,9 +187,16 @@ tasks:
       - rm -f {{.RUN}}/rebuild-now
 
   diff:
-    desc: RUN/changed.txt (lines upstream has and the state lacks), deleted.txt (paths the state has and upstream lacks), paths.txt
+    desc: RUN/changed.txt (lines upstream has and the state lacks, plus the file each changed signed sha512 names), deleted.txt (paths the state has and upstream lacks), paths.txt
     cmds:
       - LC_ALL=C comm -13 {{.RUN}}/applied.txt {{.RUN}}/upstream.txt > {{.RUN}}/changed.txt
+      # Upstream can write a signed sha512 again while the file it names stands still: TeX
+      # Live's nightly build checksums and signs its prebuilt installer every night. The
+      # named file joins the delta, so verify checks it against the new sha512 in staging.
+      # The pattern is verify's.
+      - >-
+        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
+        $1 in want' {{.RUN}}/changed.txt {{.RUN}}/upstream.txt | LC_ALL=C sort -u -o {{.RUN}}/changed.txt - {{.RUN}}/changed.txt
       - cut -f1 {{.RUN}}/upstream.txt > {{.RUN}}/paths.txt
       - cut -f1 {{.RUN}}/applied.txt | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
 
@@ -213,7 +220,7 @@ tasks:
       # a batch by itself and leaves the running batch alone. The decision batch, TL's
       # tlpkg/ (the tlpdb) and the bucket-root files (timestamp among them), is last, so
       # nothing a client reads to decide what to fetch can name a key that has not landed.
-      # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, so verify always finds the file its signature names.
+      # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, and diff puts x in the delta whenever x.sha512 is, so verify always finds the file its signature names.
       # ponytail: BATCH_GB is spliced bare because it lands inside $(( )), where a quoted
       # operand is a syntax error. What keeps it safe is the workflow refusing a vars input
       # that is not a plain value. Ceiling: another caller handing untrusted text to

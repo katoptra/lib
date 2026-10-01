@@ -51,6 +51,7 @@ task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout
 task: [rebuild] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [rebuild] rm -f /work/examples/rsync/.run/rebuild-now
 task: [diff] LC_ALL=C comm -13 /work/examples/rsync/.run/applied.txt /work/examples/rsync/.run/upstream.txt > /work/examples/rsync/.run/changed.txt
+task: [diff] awk -F'\t' -v TL="" 'NR == FNR { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next } $1 in want' /work/examples/rsync/.run/changed.txt /work/examples/rsync/.run/upstream.txt | LC_ALL=C sort -u -o /work/examples/rsync/.run/changed.txt - /work/examples/rsync/.run/changed.txt
 task: [diff] cut -f1 /work/examples/rsync/.run/upstream.txt > /work/examples/rsync/.run/paths.txt
 task: [diff] cut -f1 /work/examples/rsync/.run/applied.txt | LC_ALL=C comm -23 - /work/examples/rsync/.run/paths.txt > /work/examples/rsync/.run/deleted.txt
 task: [split] awk -F'\t' '{ s += $2 } END { printf "upstream: %d objects, %.2f GB, no ceiling\n", NR, s / 1e9 }' /work/examples/rsync/.run/upstream.txt

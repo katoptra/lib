@@ -62,6 +62,11 @@ tasks:
       - {task: diff, vars: {RUN: '{{.F}}/run-empty'}}
       - {task: merge, vars: {RUN: '{{.F}}/run-empty', STAGING: '{{.F}}/run-empty/staging', B: '{{.F}}/run-empty/changed.txt'}}
       - cmp {{.F}}/run-empty/applied.new {{.F}}/run-empty/applied.txt
+      # run-resign: upstream wrote x.exe's sha512 and signature again and left x.exe alone,
+      # as TeX Live's nightly build does to its prebuilt installer. diff takes x.exe back
+      # into the delta so verify has the file the sha512 names; y.exe, unmoved, stays out.
+      - {task: diff, vars: {RUN: '{{.F}}/run-resign', TL: tl}}
+      - test "$(cut -f1 {{.F}}/run-resign/changed.txt | tr '\n' ' ')" = "tl/x.exe tl/x.exe.sha512 tl/x.exe.sha512.asc "
       # retry: 23 and 24 are successes, a transport code is retried five times, anything else is final.
       - task retry CMD='exit 23' RETRY_BASE=0
       - task retry CMD='exit 24' RETRY_BASE=0

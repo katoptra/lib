@@ -279,7 +279,7 @@ and `smoke-mirror` do nothing until a mirror fills them.
 | `list` | `rsync -rL --list-only` of `SOURCE`, through `FILTER`, normalised to `.run/upstream.txt` as `path TAB size TAB mtime`, byte-sorted; a listing under `LIST_FLOOR` lines stops the run |
 | `state` | Fetch `.state/applied.txt.xz` from the bucket; a missing one asks `rebuild` |
 | `rebuild` | List the bucket and make the state exactly what it holds, at upstream's sizes |
-| `diff` | `changed.txt` (upstream has, the state lacks), `deleted.txt` (the state has, upstream lacks), `paths.txt` |
+| `diff` | `changed.txt` (upstream has, the state lacks, plus the file each changed signed sha512 names), `deleted.txt` (the state has, upstream lacks), `paths.txt` |
 | `split` | Refuse a tree over `CEILING_GB` or a file the disk cannot hold; split the delta into `batch-NNNN.txt` of `BATCH_GB`, the decision batch last |
 | `prepare` | Hook. With `TL_KEY` set and the delta touching `TL`: fetch the tlpdb and check its signature against the pinned key |
 | `batches` | Work the first `MAX_BATCHES`, each `fetch`, `verify`, `publish`, `checkpoint`; touch `.run/chain` when batches remain |
