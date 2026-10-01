@@ -650,6 +650,7 @@ flowchart LR
   df --> rel["release.yml, on a tag vX.Y.Z"]
   rel --> ghcr["ghcr.io/katoptra/toolbox:variant-vX.Y.Z<br/>and :variant-vX, amd64 and arm64"]
   rel --> tag["the git tag vX, moved"]
+  tag --> gr["the GitHub release vX.Y.Z"]
   tag --> inc["mirrors include toolbox.yml and an engine at v2"]
   ghcr --> img["mirrors name IMAGE at -v2"]
 ```
@@ -942,8 +943,9 @@ Proton mirror.
 ### Releasing
 
 Tag a commit `vX.Y.Z` and push the tag. The release workflow builds both images for
-amd64 and arm64, pushes `<variant>-vX.Y.Z` and `<variant>-vX`, and moves the `vX` git
-tag. Every mirror pinned to `vX` picks the change up on its next run; the workflow
+amd64 and arm64, pushes `<variant>-vX.Y.Z` and `<variant>-vX`, moves the `vX` git
+tag, and last publishes the GitHub release `vX.Y.Z`, its notes the pull requests merged
+since the one before. Every mirror pinned to `vX` picks the change up on its next run; the workflow
 callers follow through Dependabot. A breaking change to a verb's name or contract is a
 new major, and every mirror moves its two `v2` strings by hand.
 
