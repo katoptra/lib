@@ -1,6 +1,7 @@
 # On a semver tag: build each image for amd64 and arm64, push both tags, move the
-# floating major tag. Mirrors pin v<major> in the include URL and the image name, so
-# moving it is the rollout.
+# floating major tag, then publish the GitHub release. Mirrors pin v<major> in the
+# include URL and the image name, so moving it is the rollout; the release comes last,
+# so a published one names a version that is live.
 name: release
 on:
   push:
@@ -51,3 +52,9 @@ jobs:
           major="${GITHUB_REF_NAME%%.*}"
           git tag -f "$major" "$GITHUB_SHA"
           git push -f origin "refs/tags/$major"
+      # Notes list the pull requests merged since the last release. A re-run finds the
+      # release already published and leaves it.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
