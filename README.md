@@ -988,8 +988,8 @@ cd ../proton           && task image-build && task run -- task tools && task che
 tools` asks every tool for its version. `task check` renders the example's pipeline
 inside the image and diffs it against `render.txt`. `task run -- task offline` runs the
 engine's verbs that need no bucket over `fixtures/`: for rsync, the list diff, `retry`,
-and `prepare` and `verify` over a signed subtree whose throwaway key is pinned in the
-example; for proton, `confirm` over an accepting and a refusing upload summary, and an
+`due`, `prepare` and `verify` over a signed subtree whose throwaway key is pinned in the
+example, `pages` against ctan's page set byte for byte, and `smoke`'s page read-back; for proton, `confirm` over an accepting and a refusing upload summary, and an
 `age` round trip. CI runs the same four steps per variant on every pull request, plus
 the two guards' own cases.
 
