@@ -10,6 +10,8 @@ vars:
   BUCKET: example
   HOST: example.katoptra.org
   LIST_FLOOR: 1
+  INDEX: '{{.HOST}}.directory.index.html'
+  PAGE_FOOT: 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.'
 includes:
   toolbox:
     taskfile: ../../toolbox.yml
@@ -43,6 +45,10 @@ tasks:
       TREE: '{{.ROOT_DIR}}/fixtures/tree/'
       LOCAL: rsync --no-h   # a local tree; the engine's daemon-only flags are a usage error here
       FP: 3505F9E22FF030FE5D9C655A825C376AB4571163
+      # run-pages/want/ is ctan's page set for that state as ctan.katoptra.org serves it: its
+      # INDEX, and the closing line that links the directory on ctan.org.
+      CTAN_INDEX: ctan.katoptra.org.directory.index.html
+      CTAN_FOOT: '<a href="https://ctan.org/tex-archive/%s">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.'
     cmds:
       # list and normalise over a local tree: its two regular files, byte-sorted, and no directory.
       - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
@@ -107,6 +113,14 @@ tasks:
       - test "$(wc -l < {{.F}}/run-tl/tl/sums.txt)" -eq 3 && test ! -s {{.F}}/run-tl/tl/missing.txt
       # A container the tlpdb does not describe cannot pass, whatever its bytes.
       - '! task verify-refuses 2>/dev/null'
+      # run-pages: the state gained a file whose name carries & < > and a directory whose name
+      # carries a space, and lost gone/. pages draws the root, a/, a/b/ and a/sp ace/, each
+      # under both of its keys (the root under one), and names gone/'s two keys for removal.
+      # Every byte must be what want/ holds.
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}'}}
+      - diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
+      - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
+      - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
       - 'echo "offline: every check passed"'
   due-refuses:
     desc: due-rule over offline's due fixture with RECONCILE R and RECONCILE_HOURS H; offline expects it to refuse

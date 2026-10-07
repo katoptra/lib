@@ -44,6 +44,16 @@ verified go-task or platform fact that cost a session to find.
   (`github.job_workflow_sha`) for the toolbox action and the lock, so a workflow pin is
   the one pin. The include and the image float at `v2` by design: moving that tag is
   the rollout.
+- GNU `xargs` runs its command once on empty input. A guard on the file feeding a pipe is
+  not a guard on what reaches `xargs`: `pages`'s `SLASH` awk drops the root, which has no
+  slashless key, so a run whose only dirty directory is the root sends it nothing. Every
+  `xargs` whose input can be filtered down to nothing takes `-r`.
+- A `>-` folded block keeps the newline when a continuation line is indented further than
+  the lines around it. `pages`'s awk programs depend on that; a shell line meant to
+  continue ends with a backslash. `task check` shows what actually renders.
+- A macOS disk merges directories that differ only in case. Pages drawn on a laptop from a
+  real listing come out short wherever upstream has two such directories (CTAN has
+  `obsolete/support/TeXshell/` and `texshell/`). The runner is ext4 and draws both.
 
 ## Verifying a change
 

@@ -270,8 +270,8 @@ flowchart LR
   class prepare,verify,index,sm,re,rm hook
 ```
 
-Dashed verbs are hooks. `prepare` and `verify` do nothing until `TL_KEY` is set; `index`
-and `smoke-mirror` do nothing until a mirror fills them.
+Dashed verbs are hooks. `prepare` and `verify` do nothing until `TL_KEY` is set, `index`
+until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 
 | Verb | Does |
 |---|---|
@@ -289,7 +289,8 @@ and `smoke-mirror` do nothing until a mirror fills them.
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
 | `reconcile` | When `due` left `.run/reconcile`: rebuild the state, delete what neither upstream, `OWN` nor the state's own directories own, then `reconciled` |
-| `index` | Hook. Nothing here; a mirror that draws directory pages or a landing page replaces it |
+| `index` | Hook. With `INDEX` set: `pages`, then both key sets uploaded, the keys of emptied directories removed, and `.state/indexed.txt.xz` moved forward. A mirror with a landing page of its own replaces it |
+| `pages` | A page for every directory the run touched, drawn from the state into staging, with a tree per depth for the slashless keys |
 | `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; then `smoke-mirror` |
 | `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
 | `report-engine` | Hook. The engine's rows of the run summary |
@@ -362,6 +363,24 @@ A batch that fails any check stays local; the previous good copy stays live. `sm
 reads `texlive.tlpdb.sha512` back through the domain afterwards and compares it with the
 verified copy. `tlmgr` repeats the signature check on the client.
 
+#### Directory pages
+
+R2 serves no listings. With `INDEX` set, `index` draws a page for every directory a run
+touched, from the state rather than from upstream, and writes it under two keys:
+`<dir>/<INDEX>`, which a zone Transform Rule serves for `/dir/`, and the bare `<dir>`,
+which serves `/dir` where a filesystem mirror would answer 301. A `<base href>` lets one
+document serve both. `.state/indexed.txt.xz` records the state the pages last showed, so a
+run that dies before moving it redraws the same pages next time. Deleting it redraws every
+page once, which is also how a change to the markup or to `PAGE_FOOT` reaches directories
+that have not changed. `reconcile` spares both keys.
+
+The zone rule, one per host:
+
+    when:         ends_with(http.request.uri.path, "/")
+    rewrite path: concat(http.request.uri.path, http.host, ".directory.index.html")
+
+It serves the root page for `/` too. ctan excludes `/`, which is CTAN's own `index.html`.
+
 #### The vars
 
 A mirror sets `SOURCE`, `BUCKET` and `HOST` in its root vars, always. Everything else
@@ -378,7 +397,8 @@ has an inline default, and a mirror sets only what differs:
 | `TL`, `TL_KEY` | empty | A signed TeX Live subtree and the fingerprint that signs it; empty, no signature checks |
 | `FILTER` | empty | rsync filter arguments that narrow the listing, for a mirror of a subtree |
 | `OWN` | empty | Bucket-root keys the mirror owns, space separated; `reconcile` never deletes them |
-| `INDEX` | empty | The key suffix of the directory pages a mirror's `index` draws; set, `reconcile` spares those pages and every bare directory of the state |
+| `INDEX` | empty | The key suffix of the directory pages; set, `index` draws them and `reconcile` spares them and every bare directory of the state |
+| `PAGE_FOOT` | empty | The HTML every directory page closes on; `%s` is the directory's encoded path, `%%` a literal percent |
 
 A var the mirror puts in its root `vars:` is fixed for every run: inside an included
 verb a root value shadows a `KEY=value` from the command line. One the mirror leaves to
@@ -557,13 +577,15 @@ Every mirror has one S3-compatible bucket. What it holds depends on the engine.
 |---|---|---|
 | rsync | every upstream path, at the root | The mirror. A public domain serves the bucket |
 | rsync | `.state/applied.txt.xz` | The state: what the bucket holds, at upstream's size and mtime |
-| rsync, a mirror's own | `.state/indexed.txt.xz`, `index.html` | ctan's record of what its directory pages show; tlnet's landing page, spared by `OWN` |
+| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | What the directory pages last showed, and the pages under both keys |
+| rsync, a mirror's own | `index.html` | tlnet's landing page, spared by `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. The only key |
 | a pipeline of its own | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | dropbox's state and its dated copies; a lifecycle rule expires the history |
 | any that reconciles | `.state/reconciled` | The start epoch of the run that last completed a reconcile, through the engine's `push`: xz under rsync, with no `.xz` suffix, plain under dropbox |
 
-`.state/` is the one reserved prefix, chosen because no upstream in the org has a
-dot-prefixed root entry.
+`.state/` is the one reserved prefix, chosen because no upstream in the org has a `.state`
+root entry. gnu's root carries other dot-files, `.header.shtml` and `.message`, which are
+mirrored like any file.
 
 ### What a bucket needs
 
@@ -763,6 +785,10 @@ That is a whole mirror: the engine supplies `pipeline` and `plan-pipeline`, and
 A mirror of one signed subtree, shaped like tlnet, adds `TL`, `TL_KEY`, `CEILING_GB`,
 `OWN` and a `FILTER` to the root vars, excludes `index` on the engine include, and
 defines an `index` that uploads its landing page and a `report-mirror` with its row.
+
+A mirror with browsable directories, as ctan, gnu and nongnu are, adds `INDEX` and
+`PAGE_FOOT` to its root vars and the Transform Rule above to its zone. The engine does the
+rest.
 
 ### A proton mirror
 

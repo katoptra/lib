@@ -12,13 +12,14 @@
 # and the fingerprint that signs it; empty: no signature checks), FILTER (rsync filter
 # arguments for the listing; empty: the whole tree), OWN (bucket-root keys the mirror owns
 # and reconcile never deletes, space separated; empty: none), INDEX (the directory-page
-# key suffix an index hook writes; empty: none).
+# key suffix; set, index draws a page for every directory), PAGE_FOOT (the HTML every page
+# closes on, %s the directory's encoded path; empty: none).
 #
 # Hooks: prepare, verify, index, smoke, smoke-mirror and report-engine are the verbs a
 # mirror may replace, by listing each under excludes: on this include and defining its
-# own. prepare and verify do nothing until TL_KEY is set; index and smoke-mirror do
-# nothing here. pipeline and plan-pipeline are the vocabulary in order; a mirror that
-# needs another order excludes and redefines them.
+# own. prepare and verify do nothing until TL_KEY is set, index until INDEX is set;
+# smoke-mirror does nothing here. pipeline and plan-pipeline are the vocabulary in order;
+# a mirror that needs another order excludes and redefines them.
 #
 # Rules this file keeps, as the toolbox does: no vars: default for anything a mirror
 # owns, because a value here shadows the mirror's root value, and every tunable is an
@@ -33,6 +34,7 @@ vars:
   S3: s3://{{.BUCKET}}
   URL: https://{{.HOST}}
   STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
+  INDEXED: .state/indexed.txt.xz                # the state as the directory pages last showed it
   STAGING: '{{.ROOT_DIR}}/staging'
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'   # batches per run; the rest chain the next run
   RETRY_S: '{{.RETRY_BASE | default 15}}'       # seconds; a retry sleeps RETRY_S * 2^i plus jitter
@@ -444,8 +446,100 @@ tasks:
 
   # ---- after the bytes moved ----
   index:
-    desc: A hook, empty here; a mirror that draws directory pages or a landing page replaces it
-    cmds: []
+    desc: 'Hook. With INDEX set: redraw the directory pages this run changed and publish them; INDEXED, the state the pages last showed, moves forward only after they landed. A mirror with a landing page of its own replaces it'
+    status: ['test -z "{{.INDEX}}"']
+    set: [pipefail]
+    vars:
+      SLASH: '{{.RUN}}/slash'
+    cmds:
+      # No INDEXED means no page has been drawn: every directory is drawn once (ctan's 27k take
+      # about ten minutes), and the file exists from then on.
+      - {task: pull, vars: {KEY: '{{.INDEXED}}', OUT: '{{.RUN}}/indexed.txt', MISSING: ': > {{.RUN}}/indexed.txt'}}
+      - {task: pages}
+      # cp --recursive guesses text/html from the suffix. The pages stay in staging for smoke;
+      # the next run's split clears them. Not appended to publish.txt: smoke sizes that
+      # sample against upstream, which has no pages.
+      - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive {{.STAGING}}/ {{.S3}}/
+      # One upload per depth, because no single tree holds both a/b and a/b/. A slashless key
+      # carries no suffix to guess from, so the type is given: without it the CLI sends
+      # binary/octet-stream and a browser downloads the page instead of drawing it.
+      - >-
+        for d in {{.SLASH}}/*/; do test -d "$d" || continue;
+        aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html "$d" {{.S3}}/; done
+      - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
+      # The pages now show the state, and the bucket already holds it: checkpoint put it there
+      # before this verb ran. One server-side copy moves INDEXED forward; no bytes leave the
+      # runner. A run that dies before this line redraws the same pages next run.
+      - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
+
+  pages:
+    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied
+    set: [pipefail]
+    vars:
+      # Every page is written under two keys: <dir>/INDEX, which the zone's rewrite serves for a
+      # directory URL, and <dir> without its trailing slash, which serves the same URL written
+      # without one, where every other mirror answers 301. No filesystem holds both a/b and
+      # a/b/, so the second copies stage one tree per directory depth and upload a tree at a
+      # time. A task var, because a global cannot follow a RUN the caller passes.
+      SLASH: '{{.RUN}}/slash'
+    cmds:
+      - mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete
+      # A page changes when a file in its directory or a directory below it appears, changes
+      # or goes, so every ancestor of every changed line is redrawn. ponytail: about five
+      # pages per touched directory where one would often do; ceiling is Class A, a few
+      # hundred a day against a million free. Upgrade: comm the directory sets of the two
+      # files and redraw a parent only for a new or gone child.
+      - >-
+        LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
+        | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
+      - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      # A gone directory takes both of its keys with it. The root has no slashless key.
+      - >-
+        LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
+        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > {{.RUN}}/index-gone.txt
+      - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
+      - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
+      # SLASH/<depth>/ holds the slashless copies of the pages at that depth. Every file in
+      # one tree has the same number of components, so no file is another's parent directory
+      # and the tree can be uploaded whole. -r because the root is the one directory with no
+      # slashless key: a run whose only dirty directory is the root -- root files alone, or
+      # a deletion that leaves no dirty directory still standing -- gives this awk nothing to
+      # print, and xargs without it runs mkdir once with no operands.
+      - >-
+        test ! -s {{.RUN}}/index-make.txt ||
+        awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
+          for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
+        | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
+      # Entries, "dir TAB d|f TAB name TAB size TAB mtime", from the state: what the bucket
+      # holds, never upstream. Sorted, a directory's lines are contiguous with its
+      # subdirectories first, so each page is written once and closed. Names are
+      # percent-encoded in href and HTML-escaped in text. The page is built whole and written
+      # under both of its keys, so the two are the same bytes; the base href is what lets one
+      # document serve /dir/ and /dir alike, where a relative href would otherwise resolve
+      # against the parent for the second. PAGE_FOOT closes every page, %s standing for the
+      # directory's encoded path; empty, the page closes on its table.
+      - >-
+        test ! -s {{.RUN}}/index-make.txt ||
+        awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
+          { n = split($1, c, "/"); d = ""
+            for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
+            if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
+        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} '{{.URLENC}}
+          function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
+          function open(d) { cur = d; live = 1
+            p = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>\n"
+            p = p "<base href=\"/" enc(d) "\">\n"
+            p = p "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>\n"
+            p = p "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>\n"
+            if (d != "") p = p "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n" }
+          function shut(  f, b, k, e) { p = p "</table>" (F == "" ? "" : "<p>" sprintf(F, enc(cur)) "</p>") "</body></html>\n"
+            f = S cur I; printf("%s", p) > f; close(f)
+            if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
+              f = R k "/" b; printf("%s", p) > f; close(f) } }
+          !live || $1 != cur { if (live) shut(); open($1) }
+          $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
+          { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }
+          END { if (live) shut() }'
 
   smoke:
     desc: Read a sample of this run's keys back through the domain, sizes against the listing, and with TL set the tlpdb sha512 against the verified copy; then the mirror's own checks, smoke-mirror
