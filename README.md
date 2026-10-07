@@ -291,7 +291,7 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `reconcile` | When `due` left `.run/reconcile`: rebuild the state, delete what neither upstream, `OWN` nor the state's own directories own, then `reconciled` |
 | `index` | Hook. With `INDEX` set: `pages`, then both key sets uploaded, the keys of emptied directories removed, and `.state/indexed.txt.xz` moved forward. A mirror with a landing page of its own replaces it |
 | `pages` | A page for every directory the run touched, drawn from the state into staging, with a tree per depth for the slashless keys |
-| `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; then `smoke-mirror` |
+| `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; with `INDEX`, one redrawn page under both keys; with `CANARY`, that file as `libwww-perl` against the bucket's copy; no `Content-Encoding` on the first non-empty `.tar.gz`; then `smoke-mirror` |
 | `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
 | `report-engine` | Hook. The engine's rows of the run summary |
 | `retry` | Run a command, retrying rsync's transport exit codes with backoff; 23 (an unreadable path, skipped) and 24 (a file vanished mid-transfer) are successes |
@@ -399,6 +399,7 @@ has an inline default, and a mirror sets only what differs:
 | `OWN` | empty | Bucket-root keys the mirror owns, space separated; `reconcile` never deletes them |
 | `INDEX` | empty | The key suffix of the directory pages; set, `index` draws them and `reconcile` spares them and every bare directory of the state |
 | `PAGE_FOOT` | empty | The HTML every directory page closes on; `%s` is the directory's encoded path, `%%` a literal percent |
+| `CANARY` | empty | A path carrying plain `http://` links or `mailto:` addresses, no character of which a URL must encode; set, `smoke` fails if the domain serves it differently from the bucket or refuses a Perl client |
 
 A var the mirror puts in its root `vars:` is fixed for every run: inside an included
 verb a root value shadows a `KEY=value` from the command line. One the mirror leaves to

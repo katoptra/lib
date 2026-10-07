@@ -64,8 +64,9 @@ cd examples/proton && task image-build && task run -- task tools && task check &
 
 A verb change updates the `render.txt` files via `task render-update`; `offline` is
 each engine's own check. The rsync one runs over `examples/rsync/fixtures/`: the list
-diff over `run-root` and `run-empty`, `retry`'s exit codes, and `prepare` and `verify`
-over `tree/`, a signed subtree whose tlpdb is signed by a throwaway key pinned in the
+diff over `run-root` and `run-empty`, `retry`'s exit codes, `pages` over `run-pages`
+(whose `want/` is ctan's page set, matched byte for byte), `smoke`'s page read-back over
+`run-smoke`, and `prepare` and `verify` over `tree/`, a signed subtree whose tlpdb is signed by a throwaway key pinned in the
 example. Regenerate the tree with a new key only to change its shape; the private half
 was never kept. The proton one runs `confirm` over `examples/proton/fixtures/`, an
 accepting and a refusing upload summary, and the `age` verb round trip with a throwaway

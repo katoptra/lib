@@ -12,6 +12,7 @@ vars:
   LIST_FLOOR: 1
   INDEX: '{{.HOST}}.directory.index.html'
   PAGE_FOOT: 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.'
+  CANARY: pub/index.html
 includes:
   toolbox:
     taskfile: ../../toolbox.yml
@@ -121,11 +122,25 @@ tasks:
       - diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
       - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
       - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
+      # run-smoke: an hour whose only change is timestamp, whose one redrawn page is the root.
+      # smoke reads timestamp back and sizes it against the listing, then the root page under
+      # its INDEX key (a filesystem cannot hold the slashless key beside it). Over file:// the
+      # canary and the Content-Encoding check say they skipped.
+      - {task: smoke, vars: {RUN: '{{.F}}/run-smoke', STAGING: '{{.F}}/run-smoke/staging', URL: 'file://{{.F}}/run-smoke/staging'}}
+      # A page index drew that is not in staging cannot pass.
+      - '! task smoke-refuses 2>/dev/null'
       - 'echo "offline: every check passed"'
   due-refuses:
     desc: due-rule over offline's due fixture with RECONCILE R and RECONCILE_HOURS H; offline expects it to refuse
     cmds:
       - {task: due-rule, vars: {RUN: '{{.RUN}}/fixtures/due', RECONCILE: '{{.R | default "auto"}}', RECONCILE_HOURS: '{{.H | default 24}}'}}
+  smoke-refuses:
+    desc: smoke over run-smoke with the page index drew gone from staging, after offline copied the fixtures; offline expects it to fail
+    vars:
+      R: '{{.RUN}}/fixtures/run-smoke'
+    cmds:
+      - rm -f {{.R}}/staging/{{.INDEX}}
+      - {task: smoke, vars: {RUN: '{{.R}}', STAGING: '{{.R}}/staging', URL: 'file://{{.R}}/staging'}}
   verify-refuses:
     desc: verify over a batch naming a container the tlpdb does not describe, after offline staged run-tl; offline expects it to fail
     vars:

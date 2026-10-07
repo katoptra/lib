@@ -13,7 +13,9 @@
 # arguments for the listing; empty: the whole tree), OWN (bucket-root keys the mirror owns
 # and reconcile never deletes, space separated; empty: none), INDEX (the directory-page
 # key suffix; set, index draws a page for every directory), PAGE_FOOT (the HTML every page
-# closes on, %s the directory's encoded path; empty: none).
+# closes on, %s the directory's encoded path; empty: none), CANARY (a file whose bytes the
+# zone's HTML rewriters would alter; set, smoke reads it through the domain as a Perl
+# client).
 #
 # Hooks: prepare, verify, index, smoke, smoke-mirror and report-engine are the verbs a
 # mirror may replace, by listing each under excludes: on this include and defining its
@@ -542,7 +544,7 @@ tasks:
           END { if (live) shut() }'
 
   smoke:
-    desc: Read a sample of this run's keys back through the domain, sizes against the listing, and with TL set the tlpdb sha512 against the verified copy; then the mirror's own checks, smoke-mirror
+    desc: Read a sample of this run's keys back through the domain, sizes against the listing; with TL set the tlpdb sha512 against the verified copy; with INDEX set one redrawn page under both keys; with CANARY set the canary, as a Perl client, against the bucket's copy; no Content-Encoding on a .tar.gz; then the mirror's own checks, smoke-mirror
     vars:
       # The check below that names /timestamp asks for it only once the state says it landed.
       # It rides the decision batch, the last one, so a first fill capped at MAX_BATCHES has
@@ -567,6 +569,51 @@ tasks:
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}} ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
+      # One page this run redrew, read back under both of its keys by key (no zone rule
+      # needed) and sized against the copy still in staging, the same one-byte ranged read as
+      # the sample. Both keys hold the same bytes, so one staged copy sizes both. The root has
+      # no slashless key. ${d} in braces: the INDEX that follows it opens with a letter, and
+      # $d{{.INDEX}} names a variable that does not exist; test -n makes that a stated
+      # failure, not a size of "". The slashless key is read only over http: the offline
+      # check serves the pages off a filesystem, which cannot hold both a/b and a/b/.
+      - >-
+        {{if .INDEX}}test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
+        want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want";
+        case "{{.URL}}" in http*) b=1 ;; *) b=0 ;; esac;
+        printf '%s\n' "$d" | awk -v i="{{.INDEX}}" -v b="$b" '{ print $0 i } b == 1 && $0 != "" { print substr($0, 1, length($0) - 1) }'
+        | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
+        got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
+        echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }{{else}}echo "no INDEX: no directory pages to read back"{{end}}
+      # Cloudflare's HTML rewriters sit between R2 and the client, so what finds them is the
+      # object compared with what the domain serves. A size check is not enough: Automatic
+      # HTTPS Rewrites can lengthen a link by a byte while the parser it runs in collapses a
+      # newline inside the same tag, leaving the length unchanged and the bytes different.
+      # CANARY carries plain http:// links or mailto: addresses, which HTTPS Rewrites, Email
+      # Obfuscation and Rocket Loader each alter. It is read as libwww-perl, because Browser
+      # Integrity Check answers 403 to that client and every other mirror serves it; CURL's -f
+      # makes the 403 the failure. Skipped over file://, which has no bucket to read, and until
+      # the state holds the path.
+      - >-
+        {{if .CANARY}}h={{shellQuote .CANARY}}; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
+        case "{{.URL}}" in http*) ;; *) n= ;; esac;
+        if test -z "$n"; then echo "canary skipped ($h is not in the state, or the URL is not http)"; else
+        aws s3 cp {{.AWS_FLAGS}} "{{.S3}}/$h" {{.RUN}}/canary.html &&
+        {{.CURL}} -A "libwww-perl/6.67" "{{.URL}}/$h" | cmp - {{.RUN}}/canary.html &&
+        echo "$h: $n bytes, served to a libwww-perl client as the bucket holds them"; fi{{else}}echo "no CANARY: the edge's HTML rewriters and client filter go unchecked"{{end}}
+      # A stored Content-Encoding tells every client to unpack the file in flight, so a
+      # tarball arrives as a tar; GNU's mirror guidelines ask for none. The AWS CLI guesses
+      # ("application/x-tar", "gzip") for foo.tar.gz and stores only the first half; this is
+      # the check that a CLI bump never stores the second. The first non-empty .tar.gz in the
+      # state, read with no Accept-Encoding, must come back without one; an empty one answers
+      # the ranged read with 416, which CURL's -f would fail. Skipped over file:// and when
+      # the state holds no such file.
+      - >-
+        g=$(awk -F'\t' '$1 ~ /\.tar\.gz$/ && $2 > 0 { print $1; exit }' {{.RUN}}/applied.txt 2>/dev/null);
+        case "{{.URL}}" in http*) ;; *) g= ;; esac;
+        if test -z "$g"; then echo "content-encoding check skipped (no non-empty .tar.gz in the state, or the URL is not http)"; else
+        u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u") &&
+        if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi &&
+        echo "$g: served with no content-encoding"; fi
       # A called task sees none of its caller's call vars, so the three a check reads are
       # handed on; in a run they are the values above, and an offline check passes its own.
       - {task: smoke-mirror, vars: {RUN: '{{.RUN}}', STAGING: '{{.STAGING}}', URL: '{{.URL}}'}}
@@ -591,6 +638,8 @@ tasks:
         EOF
       # prepare made RUN/tl, so the delta touched the signed subtree.
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+      # With INDEX set, what index drew and removed.
+      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn under both keys, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
   retry:
     desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; 23 (a path it could not read, a dangling symlink under -L) and 24 (file vanished mid-transfer) are successes
