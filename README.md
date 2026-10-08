@@ -263,7 +263,8 @@ flowchart LR
     direction LR
     fetch --> verify --> publish --> checkpoint
   end
-  batches --> b --> delete --> reconcile["reconcile<br/>when due"] --> index --> smoke --> report --> ping
+  batches --> b --> delete --> reconcile["reconcile<br/>when due"] --> relabel["relabel<br/>once a bucket"] --> index --> smoke --> report --> ping
+  smoke --> fr["fresh"]
   smoke --> sm["smoke-mirror"]
   report --> re["report-engine"] --> rm["report-mirror"]
   classDef hook stroke-dasharray: 5 5
@@ -285,18 +286,21 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `batches` | Work the first `MAX_BATCHES`, each `fetch`, `verify`, `publish`, `checkpoint`; touch `.run/chain` when batches remain |
 | `fetch` | rsync the batch's files into `staging/`, dereferencing symlinks; a path that vanished since the listing is skipped |
 | `verify` | Hook. With `TL_KEY` set: every signed file and every container in the batch against the tlpdb |
-| `publish` | `aws s3 cp --recursive` of staging, one PutObject per file, never a destination listing; `timestamp` last |
+| `publish` | `label` the batch, then `aws s3 cp --recursive` once per type, each type's files in a tree of their own, one PutObject per file, never a destination listing; `timestamp` last |
+| `label` | `.run/labels.txt`: every staged file's Content-Type, from its name and first KiB; see [Content types](#content-types) |
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
 | `reconcile` | When `due` left `.run/reconcile`: rebuild the state, delete what neither upstream, `OWN` nor the state's own directories own, then `reconciled` |
+| `relabel` | Once a bucket: every compressed object gets its type by a server-side copy onto itself, then `.state/labels-v1`; a refusal warns and the next run tries again |
 | `index` | Hook. With `INDEX` set: `pages`, then both key sets uploaded, the keys of emptied directories removed, and `.state/indexed.txt.xz` moved forward. A mirror with a landing page of its own replaces it |
 | `pages` | A page for every directory the run touched, drawn from the state into staging, with a tree per depth for the slashless keys |
-| `smoke` | A sample of the run's keys read back through `HOST`, sizes against the listing; the tlpdb sha512 when `TL` is set; with `INDEX`, one redrawn page under both keys; with `CANARY`, that file as `libwww-perl` against the bucket's copy; no `Content-Encoding` on the first non-empty `.tar.gz`; then `smoke-mirror` |
+| `smoke` | A key of every type the run published, read back through `HOST`: size against the listing, Content-Type against the label; the tlpdb sha512 when `TL` is set; with `INDEX`, one redrawn page under both keys; with `CANARY`, that file as `libwww-perl` against the bucket's copy; no `Content-Encoding` on the first non-empty `.tar.gz`; a warning for every path upstream lists and rsync never sends; then `fresh` and `smoke-mirror` |
+| `fresh` | With `FRESH_KEY` set: read upstream's clock in that file through `HOST` and fail the run past `FRESH_HOURS` |
 | `smoke-mirror` | Hook. Nothing here; a mirror with more to read back defines it |
 | `report-engine` | Hook. The engine's rows of the run summary |
 | `retry` | Run a command, retrying rsync's transport exit codes with backoff; 23 (an unreadable path, skipped) and 24 (a file vanished mid-transfer) are successes |
 
-`normalise`, `pull`, `push`, `batch`, `merge` and `remove` are the verbs those call;
+`normalise`, `pull`, `push`, `batch`, `label-trees`, `merge`, `remove` and `relabel-plan` are the verbs those call;
 `pull` and `push` move an xz-compressed key between the bucket and `.run`, and a
 mirror's own verb may call them.
 
@@ -381,6 +385,38 @@ The zone rule, one per host:
 
 It serves the root page for `/` too. ctan excludes `/`, which is CTAN's own `index.html`.
 
+#### Content types
+
+R2 serves the Content-Type an object was stored with, and the AWS CLI, left to itself,
+stores the first half of Python's guess: `foo.diff.gz` guesses as a gzipped diff and is
+stored as `text/x-diff`, which a browser draws as text. Its guesses also move with the
+image, so one type can be stored two ways in one bucket. So `label` decides every type and
+the CLI guesses none:
+
+1. A name ending in a `COMPRESSED` ending (`.gz`, `.tgz`, `.bz2`, `.xz`, `.Z`, `.zst`,
+   `.lz`, ...) is that compressed type, whatever the rest of the name says. The types are
+   ftp.gnu.org's.
+2. An ending Python reads as compressed and `COMPRESSED` lacks gets a signature's type or
+   `application/octet-stream`, never text.
+3. Otherwise the image's `mime.types` names it, unless the name says a type a browser draws
+   (text, XML, JSON, JavaScript, PDF) and the first KiB disagrees: a compression
+   signature, a NUL, a PDF without `%PDF-`. Then the bytes decide.
+4. A name with no type is typed from the bytes: a known signature, `text/plain` without a
+   NUL, `application/octet-stream` with one.
+
+A stray control byte is not a NUL, so an old `.sty` ending in `^Z` stays `text/x-tex`. Three
+checks hold it: `offline` labels a set of names and bytes and fails on any change, which is
+where an image bump that moves `mime.types` shows; `smoke` reads one key of every type
+back through the domain and compares the served type with the label; and the existing
+`.tar.gz` check keeps `Content-Encoding` off tarballs.
+
+`relabel` gives the objects already in a bucket the compressed types, once: one copy
+read back through the domain first, so a store that refuses costs one request, then one
+`aws s3 cp --recursive --metadata-directive REPLACE` per `COMPRESSED` line, a server-side
+copy of each match onto itself, and `.state/labels-v1` last. A directory named like a
+tarball keeps its page. It fails soft: a warning on the run, no mark, and the next run tries
+again. It is a migration, and leaves the engine once every bucket holds the mark.
+
 #### The vars
 
 A mirror sets `SOURCE`, `BUCKET` and `HOST` in its root vars, always. Everything else
@@ -400,6 +436,8 @@ has an inline default, and a mirror sets only what differs:
 | `INDEX` | empty | The key suffix of the directory pages; set, `index` draws them and `reconcile` spares them and every bare directory of the state |
 | `PAGE_FOOT` | empty | The HTML every directory page closes on; `%s` is the directory's encoded path, `%%` a literal percent |
 | `CANARY` | empty | A path carrying plain `http://` links or `mailto:` addresses, no character of which a URL must encode; set, `smoke` fails if the domain serves it differently from the bucket or refuses a Perl client |
+| `FRESH_KEY` | empty | A file in which upstream records its own clock, as Unix time or CTAN's `YYYY-MM-DD-HH-MM`; set, `fresh` fails the run when it is older than `FRESH_HOURS` |
+| `FRESH_HOURS` | 24 | Hours; under the 28 at which GNU's and CTAN's monitors call a mirror old |
 
 A var the mirror puts in its root `vars:` is fixed for every run: inside an included
 verb a root value shadows a `KEY=value` from the command line. One the mirror leaves to
@@ -579,6 +617,7 @@ Every mirror has one S3-compatible bucket. What it holds depends on the engine.
 | rsync | every upstream path, at the root | The mirror. A public domain serves the bucket |
 | rsync | `.state/applied.txt.xz` | The state: what the bucket holds, at upstream's size and mtime |
 | rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | What the directory pages last showed, and the pages under both keys |
+| rsync | `.state/labels-v1` | `relabel`'s mark: every compressed object carries its type |
 | rsync, a mirror's own | `index.html` | tlnet's landing page, spared by `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. The only key |
 | a pipeline of its own | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | dropbox's state and its dated copies; a lifecycle rule expires the history |
@@ -989,7 +1028,9 @@ tools` asks every tool for its version. `task check` renders the example's pipel
 inside the image and diffs it against `render.txt`. `task run -- task offline` runs the
 engine's verbs that need no bucket over `fixtures/`: for rsync, the list diff, `retry`,
 `due`, `prepare` and `verify` over a signed subtree whose throwaway key is pinned in the
-example, `pages` against ctan's page set byte for byte, and `smoke`'s page read-back; for proton, `confirm` over an accepting and a refusing upload summary, and an
+example, `pages` against ctan's page set byte for byte, `smoke`'s page read-back, `label`
+over a set of names and bytes, `label-trees` there and back, `relabel-plan`, and `fresh`
+passing and failing; for proton, `confirm` over an accepting and a refusing upload summary, and an
 `age` round trip. CI runs the same four steps per variant on every pull request, plus
 the two guards' own cases.
 

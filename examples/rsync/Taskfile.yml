@@ -129,7 +129,62 @@ tasks:
       - {task: smoke, vars: {RUN: '{{.F}}/run-smoke', STAGING: '{{.F}}/run-smoke/staging', URL: 'file://{{.F}}/run-smoke/staging'}}
       # A page index drew that is not in staging cannot pass.
       - '! task smoke-refuses 2>/dev/null'
+      # run-label, made here because its names and bytes are the point: every rule label
+      # keeps. A COMPRESSED ending wins over the rest of the name (a.diff.gz, c.tgz, l.Z); a
+      # drawn type the bytes contradict gives way to them (d.txt with a NUL, f.pdf that is
+      # gzip); a type nothing contradicts stands (g.sig, h.xpi, j.sty with a ^Z, sub/i.html);
+      # a name with no type is typed from the bytes (README, empty k, m and n); an ending
+      # Python reads as compressed and COMPRESSED lacks is never text (q.txt.br); and a
+      # colon is no URL scheme (data:p.html). label-trees then moves all but timestamp out,
+      # one tree per type, and back, and staging is byte for byte what it was.
+      - |
+        d={{.F}}/run-label/staging; mkdir -p $d/sub
+        printf '\037\213\010' > $d/a.diff.gz; printf '\375\067\172\130\132\000' > $d/b.tar.xz
+        printf '\037\213\010' > $d/c.tgz; printf 'plain words\n' > $d/README
+        printf 'x\000y' > $d/d.txt; printf '%%PDF-1.4\n' > $d/e.pdf; printf '\037\213\010' > $d/f.pdf
+        printf '\211\001\000' > $d/g.sig; printf 'PK\003\004' > $d/h.xpi; printf '<p></p>\n' > $d/sub/i.html
+        printf 'x\032y\n' > $d/j.sty; : > $d/k; printf '\037\235' > $d/l.Z; printf 'x\000' > $d/m
+        printf 'BZh9' > $d/n; printf '<p></p>\n' > "$d/data:p.html"; printf 'abc' > $d/q.txt.br
+        printf '2026-10-08-05-02\n' > $d/timestamp
+        cp -R $d {{.F}}/run-label/before
+      - {task: label, vars: {RUN: '{{.F}}/run-label', DIR: '{{.F}}/run-label/staging'}}
+      - |
+        printf '%s\t%s\n' README text/plain a.diff.gz application/x-gzip b.tar.xz application/x-xz \
+          c.tgz application/x-gzip d.txt application/octet-stream data:p.html text/html e.pdf application/pdf \
+          f.pdf application/x-gzip g.sig application/pgp-signature h.xpi application/x-xpinstall \
+          j.sty text/x-tex k text/plain l.Z application/x-compress m application/octet-stream \
+          n application/x-bzip2 q.txt.br application/octet-stream sub/i.html text/html timestamp text/plain \
+        | diff - {{.F}}/run-label/labels.txt
+      - {task: label-trees, vars: {TO: up, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
+      - test "$(cd {{.F}}/run-label/staging && find . -type f)" = ./timestamp && test "$(ls {{.F}}/run-label/up/*.type | wc -l)" -eq 11
+      - {task: label-trees, vars: {TO: staging, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
+      - diff -r {{.F}}/run-label/before {{.F}}/run-label/staging && test ! -e {{.F}}/run-label/up
+      # relabel-plan over a state that holds a directory named like a tarball (gnu's librejs
+      # has two) and one whose name carries glob characters: only files ending in a
+      # COMPRESSED suffix are matches, .z is not .Z, and both directories' slashless page
+      # keys are spared, the second as a glob that matches it alone.
+      - |
+        mkdir -p {{.F}}/run-relabel
+        printf '%s\t1\t-\n' 'a b.diff.gz' 'lib/x.tar.gz/inner.xpi' 'p[1]*?.tar.gz/f' plain.txt u.Z v.z > {{.F}}/run-relabel/applied.txt
+      - {task: relabel-plan, vars: {RUN: '{{.F}}/run-relabel'}}
+      - printf '%s\t%s\n' 'a b.diff.gz' application/x-gzip u.Z application/x-compress | diff - {{.F}}/run-relabel/relabel.txt
+      - printf '%s\n' lib/x.tar.gz 'p[[]1][*][?].tar.gz' | diff - {{.F}}/run-relabel/relabel-skip.txt
+      # fresh over three clocks served off a filesystem: Unix time an hour old and CTAN's
+      # dated form two hours old pass; Unix time two days old, Savannah's layout, fails.
+      - |
+        r={{.F}}/run-fresh; mkdir -p $r/srv; now=$(date -u +%s)
+        echo $((now - 3600)) > $r/srv/new.txt
+        printf '%s\nThu Oct  8 03:30:01 UTC 2026\n' $((now - 172800)) > $r/srv/old.txt
+        printf '# This file is for administrative purposes only.\nirony.dante.de\n%s\n' "$(date -u -d @$((now - 7200)) +%Y-%m-%d-%H-%M)" > $r/srv/timestamp
+        printf '%s\t1\t-\n' new.txt old.txt timestamp > $r/applied.txt
+      - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: new.txt}}
+      - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: timestamp}}
+      - '! task fresh-refuses 2>/dev/null'
       - 'echo "offline: every check passed"'
+  fresh-refuses:
+    desc: fresh over offline's run-fresh with a clock two days old; offline expects it to fail
+    cmds:
+      - {task: fresh, vars: {RUN: '{{.RUN}}/fixtures/run-fresh', URL: 'file://{{.RUN}}/fixtures/run-fresh/srv', FRESH_KEY: old.txt}}
   due-refuses:
     desc: due-rule over offline's due fixture with RECONCILE R and RECONCILE_HOURS H; offline expects it to refuse
     cmds:
