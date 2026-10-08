@@ -38,11 +38,14 @@
 version: '3'
 
 vars:
+  # The engine names its image. The IMAGE on the toolbox include, for example the -dev
+  # image of a lib example, must win. So this value is a default: a literal value here
+  # beats the include.
+  IMAGE: '{{.IMAGE | default "ghcr.io/katoptra/toolbox:rsync-v2"}}'
   S3: s3://{{.BUCKET}}
   URL: https://{{.HOST}}
   STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
   INDEXED: .state/indexed.txt.xz                # the state as the directory pages last showed it
-  STAGING: '{{.ROOT_DIR}}/staging'
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'   # batches per run; the rest chain the next run
   RETRY_S: '{{.RETRY_BASE | default 15}}'       # seconds; a retry sleeps RETRY_S * 2^i plus jitter
   FRESH_H: '{{.FRESH_HOURS | default 24}}'      # hours; GNU's and CTAN's monitors call a mirror old past 28
@@ -162,7 +165,8 @@ tasks:
             print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
         | LC_ALL=C sort > {{.RUN}}/upstream.txt
       # A truncated listing must never become a deletion list. LIST_FLOOR is a line count
-      # the listing never legitimately falls to, about half its usual size; unset, no guard.
+      # that a correct listing never falls to, about 90% of its usual size. When it is
+      # unset, there is no guard.
       - '{{if .LIST_FLOOR}}test "$(wc -l < {{.RUN}}/upstream.txt)" -gt {{.LIST_FLOOR}}{{else}}echo "no LIST_FLOOR: a truncated listing is not caught here"{{end}}'
 
   state:
@@ -247,9 +251,10 @@ tasks:
         {{.RUN}}/changed.txt
       - rm -f {{.RUN}}/batch-*.txt
       # Cumulative size from the listing; nothing is touched to split. A file over the cap is
-      # a batch by itself and leaves the running batch alone. The decision batch, TL's
-      # tlpkg/ (the tlpdb) and the bucket-root files (timestamp among them), is last, so
-      # nothing a client reads to decide what to fetch can name a key that has not landed.
+      # a batch by itself and leaves the running batch alone. The decision batch goes last.
+      # It holds TL's tlpkg/ (the tlpdb) and the files at the bucket root, the FRESH_KEY
+      # file among them. So nothing that a client reads to decide what to fetch can name a
+      # key that has not landed.
       # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, and diff puts x in the delta whenever x.sha512 is, so verify always finds the file its signature names.
       # ponytail: BATCH_GB is spliced bare because it lands inside $(( )), where a quoted
       # operand is a syntax error. What keeps it safe is the workflow refusing a vars input
@@ -390,19 +395,24 @@ tasks:
       - cat {{.RUN}}/labels.txt >> {{.RUN}}/labeled.txt
       # The CLI takes one --content-type a call and guesses from the name without one, so
       # each type's files go up from a tree of their own, RUN/up/N/, and come back for
-      # merge. cp --recursive never lists the destination: one PutObject per file,
-      # multipart only above the mirror's aws.config threshold. Keys are the paths under
-      # the tree, which are upstream's own.
+      # merge. cp --recursive never lists the destination. It sends each file as one
+      # PutObject, or in parts above the threshold in the image's aws.config. Keys are the
+      # paths under the tree, which are upstream's own.
       - {task: label-trees, vars: {TO: up}}
       - >-
         for d in {{.RUN}}/up/*/; do test -d "$d" || continue;
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type "$(cat "${d%/}.type")" "$d" {{.S3}}/ | tee -a {{.RUN}}/publish.txt; done
       - {task: label-trees, vars: {TO: staging}}
-      # timestamp is what mirmon reads, so it goes up alone, after everything else.
+      # The FRESH_KEY file goes up alone, after all other files. It dates the tree, and
+      # monitors such as mirmon read it.
+      # ponytail: this command and label-trees splice FRESH_KEY bare into an awk string and
+      # a Python string. Ceiling: a key with a quote, a backslash or a non-ASCII character
+      # breaks them. Upgrade path: give it to awk with -v and to Python as an argument.
+      # Then regenerate render.txt in lib and in each rsync mirror.
       - >-
-        test ! -f {{.STAGING}}/timestamp ||
-        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == "timestamp" { print $2 }' {{.RUN}}/labels.txt)"
-        {{.STAGING}}/timestamp {{.S3}}/timestamp | tee -a {{.RUN}}/publish.txt
+        {{if .FRESH_KEY}}test ! -f {{.STAGING}}/{{shellQuote .FRESH_KEY}} ||
+        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == "{{.FRESH_KEY}}" { print $2 }' {{.RUN}}/labels.txt)"
+        {{.STAGING}}/{{shellQuote .FRESH_KEY}} {{.S3}}/{{shellQuote .FRESH_KEY}} | tee -a {{.RUN}}/publish.txt{{end}}
 
   label:
     desc: RUN/labels.txt, "path TAB type" for every file under DIR (STAGING), byte-sorted; the type is decided from the name and the first KiB, never left to the CLI
@@ -463,13 +473,15 @@ tasks:
       - LC_ALL=C sort {{.RUN}}/labels.raw > {{.RUN}}/labels.txt && rm {{.RUN}}/labels.raw
 
   label-trees:
-    desc: 'TO=up: rename every file of RUN/labels.txt but the root timestamp out of STAGING into RUN/up/N/, one tree per type, its type in RUN/up/N.type. TO=staging: rename them back'
+    desc: 'TO=up: rename every file of RUN/labels.txt but the FRESH_KEY file out of STAGING into RUN/up/N/, one tree per type, its type in RUN/up/N.type. TO=staging: rename them back'
     internal: true
     requires: {vars: [TO]}
     cmds:
       # Renames on one filesystem, so no byte is copied, and staging is whole again for
       # merge. A run that dies between the two leaves files under up/; the next run's fetch
       # starts staging from nothing and this starts up/ from nothing.
+      # The FRESH_KEY file stays in staging, and publish sends it last. With no FRESH_KEY,
+      # the empty name matches no file, so every file moves.
       - |
         python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} <<'PY'
         import os, shutil, sys
@@ -486,7 +498,7 @@ tasks:
             with open(labels, "rb") as f:
                 for line in f:
                     path, t = line.rstrip(b"\n").split(b"\t")
-                    if path != b"timestamp":
+                    if path != b"{{.FRESH_KEY}}":
                         n = trees.setdefault(t, str(len(trees) + 1).encode())
                         move(os.path.join(staging, path), os.path.join(up, n, path))
             for t, n in trees.items():
@@ -549,7 +561,7 @@ tasks:
       D: '{{if .D}}{{.D}}{{else}}{{.RUN}}/deleted.txt{{end}}'
     # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
     # still name these containers, so they go only in the hour every batch has landed.
-    status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
+    status: ['test ! -s {{.D}} || test -f {{.RUN}}/chain']
     cmds:
       - {task: remove, vars: {K: '{{.D}}'}}
       - {task: checkpoint, vars: {B: '{{.D}}'}}
@@ -559,7 +571,7 @@ tasks:
     # Not while a batch waits for a later run: delete would hold the orphans back, so the run
     # stays due and the chained run that lands the last batch reconciles. A run that fails
     # before the last line records nothing either, so the next run is due too.
-    status: ['test ! -f {{.RUN}}/reconcile || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
+    status: ['test ! -f {{.RUN}}/reconcile || test -f {{.RUN}}/chain']
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
@@ -681,21 +693,22 @@ tasks:
   smoke:
     desc: Read a key of every type this run published back through the domain, size against the listing and type against the label; with TL set the tlpdb sha512 against the verified copy; with INDEX set one redrawn page under both keys; with CANARY set the canary, as a Perl client, against the bucket's copy; no Content-Encoding on a .tar.gz; warn of paths that never land; fresh; then the mirror's own checks, smoke-mirror
     vars:
-      # The check below that names /timestamp asks for it only once the state says it landed.
+      # The sample below reads the FRESH_KEY file only once the state says that it landed.
       # It rides the decision batch, the last one, so a first fill capped at MAX_BATCHES has
       # not reached it and the bucket answers 404 to a key it has never held; the run it
       # lands in and every run after name it. Empty is the only falsy value, so the path is
       # both the flag and the key.
       TS:
-        sh: awk -F'\t' '$1 == "timestamp" { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true
+        sh: |-
+          {{if .FRESH_KEY}}awk -F'\t' -v k={{shellQuote .FRESH_KEY}} '$1 == k { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true{{end}}
     cmds:
       # The sample is the first key of every type label gave this run, read back by its
       # encoded URL and looked up by its raw path: its size against the listing, and over
       # http its Content-Type against the label, which is what finds the CLI, R2 or the zone
-      # serving a type other than the one decided. timestamp joins for its size alone. A
-      # sampled key is as likely as any other to carry a space.
+      # serving a type other than the one decided. The FRESH_KEY file joins for its size
+      # alone. A sampled key is as likely as any other to carry a space.
       - >-
-        { {{if .TS}}printf '%s\t\n' {{.TS}};{{end}}
+        { {{if .TS}}printf '%s\t\n' {{shellQuote .TS}};{{end}}
         awk -F'\t' '!seen[$2]++' {{.RUN}}/labeled.txt 2>/dev/null; }
         | while IFS="$(printf '\t')" read -r k t; do
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
@@ -709,7 +722,7 @@ tasks:
       # MAX_BATCHES has not published this hour's copy yet and has nothing to compare.
       - >-
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
-        test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}} ||
+        test -f {{.RUN}}/chain ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
       # One page this run redrew, read back under both of its keys by key (no zone rule
       # needed) and sized against the copy still in staging, the same one-byte ranged read as
@@ -761,7 +774,7 @@ tasks:
       # been worked, the delta lines the state still lacks are those: report counts them,
       # and each of the first 20 is a warning on the Actions run.
       - >-
-        if test -f {{.RUN}}/changed.txt && test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -le {{.BATCHES_MAX}};
+        if test -f {{.RUN}}/changed.txt && test ! -f {{.RUN}}/chain;
         then LC_ALL=C comm -23 {{.RUN}}/changed.txt {{.RUN}}/applied.txt > {{.RUN}}/unlanded.txt; else : > {{.RUN}}/unlanded.txt; fi;
         cut -f1 {{.RUN}}/unlanded.txt | head -20 | while IFS= read -r p; do echo "::warning::listed upstream, never fetched: $p"; done
       # A called task sees none of its caller's call vars, so the three a check reads are

@@ -25,12 +25,20 @@
 version: '3'
 
 vars:
-  STAGING: '{{.ROOT_DIR}}/staging'
+  # The engine names its image. The IMAGE on the toolbox include, for example the -dev
+  # image of a lib example, must win. So this value is a default: a literal value here
+  # beats the include.
+  IMAGE: '{{.IMAGE | default "ghcr.io/katoptra/toolbox:proton-v2"}}'
+  # SESSION and UPLOAD spell out ROOT_DIR/.run and do not read RUN, the toolbox's var.
+  # For a root task, go-task evaluates the vars of sibling includes in an order that
+  # changes from run to run (verified, 3.53.1 and 3.54.0). So RUN can be unset when it
+  # evaluates these two.
   SESSION: '{{.ROOT_DIR}}/.run/session'
   SESSION_KEY: .state/session.tar.age
   UPLOAD: '{{.ROOT_DIR}}/.run/upload.json'
-  # The CLI with its session as plain files under RUN/session: the image has no keyring.
-  PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file proton-drive
+  # The CLI keeps its session as plain files under RUN/session. The image sets the plain
+  # file store, because it has no keyring.
+  PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} proton-drive
 
 tasks:
   pipeline:

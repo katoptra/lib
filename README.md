@@ -84,7 +84,7 @@ flowchart TB
 |---|---|---|---|
 | Toolbox | `toolbox.yml` | How a run starts, is contained, resolves secrets, is rendered, checked and reported | Never; it is included as is |
 | Engine | `engines/<transport>.yml` | How bytes move for one transport, and the pipeline's order | It lists a hook under `excludes:` and defines its own |
-| Image | `docker/`, `toolchain.lock.toml` | Every tool a run needs, pinned by checksum | Never; it names one in `IMAGE` |
+| Image | `docker/`, `toolchain.lock.toml` | Every tool a run needs, pinned by checksum | Never; its engine names one, or it names one in `IMAGE` |
 | Workflows | `.github/workflows`, `.github/actions/toolbox` | How Actions installs the tools and runs `task sync` and `task check` | Never; its callers are a few lines each |
 | Mirror | The mirror's own repository | Identity, the hooks, the exceptions | Always; this is all it holds |
 
@@ -189,7 +189,7 @@ keeps its own.
 | `due` | Decide whether this run reconciles, by the age of the last reconcile at `.state/reconciled`; leave `.run/reconcile` when it does. `due-rule` is the rule alone |
 | `reconciled` | Record this run's start at `.state/reconciled`; an engine runs it once a reconcile completes |
 | `report` | Append the run summary to the Actions job page (stdout elsewhere): its own rows, then `report-engine`'s, then `report-mirror`'s |
-| `report-engine`, `report-mirror` | Hooks: no-ops here; the engine's and the mirror's rows |
+| `report-mirror` | Hook: a no-op here; the mirror's rows |
 | `ping` | GET `HEALTHCHECK_URL`; skipped when unset |
 | `ping-fail` | GET `HEALTHCHECK_URL/fail`; skipped when unset |
 | `failed` | The failure path: `report STATUS=failed`, then `ping-fail` |
@@ -225,8 +225,10 @@ reconciles defines `pull` and `push` itself.
 
 | Name | Kind | Meaning |
 |---|---|---|
-| `NAME`, `DESC`, `IMAGE` | include vars, required | The menu's title and line, and the image the run happens inside |
+| `NAME`, `DESC` | include vars, required | The menu's title and line |
+| `IMAGE` | include var, required unless the engine names it | The image the run happens inside. The include's value wins over the engine's |
 | `pipeline`, `plan-pipeline` | tasks, required | The full run and its read-only half, inside the image. An engine supplies both; a mirror with no engine defines them |
+| `report-engine` | task, required | The engine's rows of the run summary, which `report` calls. An engine supplies it; a mirror with no engine defines it, with no commands when it has no rows |
 | `op.env` | file | `op://` references, one per secret. Absent means the environment is already resolved: on a laptop, whatever is exported; in Actions, the repository's secrets, crossing by the names in `PASS` |
 | `PASS` | include var | Host environment names that cross into the container beside the ones in `op.env`. Task vars are not environment: they go after `--` |
 | `MENU` | include var | Extra lines for the menu, one per mirror-specific verb |
@@ -286,7 +288,7 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `batches` | Work the first `MAX_BATCHES`, each `fetch`, `verify`, `publish`, `checkpoint`; touch `.run/chain` when batches remain |
 | `fetch` | rsync the batch's files into `staging/`, dereferencing symlinks; a path that vanished since the listing is skipped |
 | `verify` | Hook. With `TL_KEY` set: every signed file and every container in the batch against the tlpdb |
-| `publish` | `label` the batch, then `aws s3 cp --recursive` once per type, each type's files in a tree of their own, one PutObject per file, never a destination listing; `timestamp` last |
+| `publish` | `label` the batch, then `aws s3 cp --recursive` once per type, each type's files in a tree of their own, one PutObject per file, never a destination listing; the `FRESH_KEY` file last |
 | `label` | `.run/labels.txt`: every staged file's Content-Type, from its name and first KiB; see [Content types](#content-types) |
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
@@ -419,7 +421,7 @@ has an inline default, and a mirror sets only what differs:
 | `CEILING_GB` | 0, no ceiling | `split` refuses a tree larger than this many decimal GB |
 | `BATCH_GB` | 4 | Decimal GB per batch; a larger file is a batch by itself |
 | `MAX_BATCHES` | 4 | Batches per run; the rest chain the next run |
-| `LIST_FLOOR` | 0, no guard | A listing under this many lines is a truncated one, never a deletion list |
+| `LIST_FLOOR` | 0, no guard | A listing under this many lines is a truncated one, never a deletion list. Set it to about 90% of the usual line count |
 | `RECONCILE`, `RECONCILE_HOURS` | `auto`, 24 | The toolbox's: see [Reconcile, by age](#reconcile-by-age) |
 | `RETRY_BASE` | 15 | Seconds; the retry sleeps are `RETRY_BASE * 2^i` plus jitter |
 | `TL`, `TL_KEY` | empty | A signed TeX Live subtree and the fingerprint that signs it; empty, no signature checks |
@@ -641,9 +643,10 @@ default: a full CTAN mirror is under $2 a month. Things the engines know about i
   `when_required`.
 - R2 does not list keys in byte order, so every bucket listing is re-sorted before
   `join` or `comm`.
-- The single-part upload limit is 4.995 GiB; a mirror with a larger file sets
-  `multipart_threshold` and `multipart_chunksize` in an `aws.config` the Taskfile names
-  through `AWS_CONFIG_FILE`. A multipart upload costs one Class A operation per part.
+- The single-part upload limit is 4.995 GiB. The `rsync` image sets `AWS_CONFIG_FILE` to
+  its `/etc/aws.config`. There, `multipart_threshold` and `multipart_chunksize` make the
+  CLI send a file over 4 GiB in 512 MiB parts. A multipart upload costs one Class A
+  operation per part.
 - `DeleteObjects` takes 1,000 keys per call and is free.
 
 ## Monitoring
@@ -705,7 +708,7 @@ flowchart LR
   rel --> tag["the git tag vX, moved"]
   tag --> gr["the GitHub release vX.Y.Z"]
   tag --> inc["mirrors include toolbox.yml and an engine at v2"]
-  ghcr --> img["mirrors name IMAGE at -v2"]
+  ghcr --> img["engines, and mirrors with no engine, name IMAGE at -v2"]
 ```
 
 Two pins, one policy. The include and the image float at `v2`, on purpose: moving that
@@ -792,7 +795,6 @@ includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
-    excludes: [report-engine]
     vars:
       NAME: ctan
       DESC: an hourly mirror of CTAN at https://ctan.katoptra.org/
@@ -810,8 +812,8 @@ AWS_ENDPOINT_URL=op://<vault-uuid>/ctan/r2/endpoint
 HEALTHCHECK_URL=op://<vault-uuid>/ctan/healthcheck/url
 ```
 
-That is a whole mirror: the engine supplies `pipeline` and `plan-pipeline`, and
-`report-engine` is excluded on the toolbox include because the engine defines it too.
+That is a whole mirror. The engine supplies `pipeline`, `plan-pipeline` and
+`report-engine`.
 
 A mirror of one signed subtree, shaped like tlnet, adds `TL`, `TL_KEY`, `CEILING_GB`,
 `OWN` and a `FILTER` to the root vars, excludes `index` on the engine include, and
@@ -831,7 +833,7 @@ includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
-    excludes: [report-engine, report-mirror]
+    excludes: [report-mirror]
     vars: {NAME: github, DESC: a nightly mirror of every repository under OWNERS into Proton Drive, IMAGE: ghcr.io/katoptra/toolbox:proton-v2}
   proton:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml
@@ -861,6 +863,7 @@ tasks:
     cmds: [{task: clock}, {task: session}, {task: state}, '# the mirror's own steps', {task: report}, {task: ping}]
   plan-pipeline:
     cmds: [{task: clock}, {task: session}, {task: state}, '# the read-only steps']
+  report-engine: {cmds: []}   # no engine, so no engine rows
   report-mirror: {cmds: ['# cat the mirror's own report onto the job page']}
 ```
 
@@ -956,8 +959,6 @@ The rules that keep this honest:
 - The replacement reads the mirror's root vars, the same as the original did.
 - Override engine verbs and the in-container toolbox verbs. Do not override the host
   side: `sync`, `plan`, `check` and `run` are what the workflows and the menu promise.
-- `report-engine` is defined in the toolbox as a no-op and in every engine, so an engine
-  consumer's toolbox include excludes it.
 
 ### Adding a hook or a verb, in an engine
 

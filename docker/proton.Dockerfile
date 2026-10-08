@@ -68,11 +68,13 @@ PY
 
 # Inside a run there is no network for Taskfiles: the mirror's .task/remote cache rides
 # in with the bind mount. R2 has one region and rejects the SDK's default checksum
-# headers; both values are literals, not secrets.
+# headers; both values are literals, not secrets. The image has no keyring, so the
+# Proton CLI keeps its session as plain files.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/work/src \
     TASK_REMOTE_OFFLINE=1 \
     AWS_REGION=auto \
     AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
-    AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+    AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+    PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
 WORKDIR /work
