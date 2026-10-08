@@ -421,7 +421,7 @@ has an inline default, and a mirror sets only what differs:
 | `CEILING_GB` | 0, no ceiling | `split` refuses a tree larger than this many decimal GB |
 | `BATCH_GB` | 4 | Decimal GB per batch; a larger file is a batch by itself |
 | `MAX_BATCHES` | 4 | Batches per run; the rest chain the next run |
-| `LIST_FLOOR` | 0, no guard | A listing under this many lines is a truncated one, never a deletion list |
+| `LIST_FLOOR` | 0, no guard | A listing under this many lines is a truncated one, never a deletion list. Set it to about 90% of the usual line count |
 | `RECONCILE`, `RECONCILE_HOURS` | `auto`, 24 | The toolbox's: see [Reconcile, by age](#reconcile-by-age) |
 | `RETRY_BASE` | 15 | Seconds; the retry sleeps are `RETRY_BASE * 2^i` plus jitter |
 | `TL`, `TL_KEY` | empty | A signed TeX Live subtree and the fingerprint that signs it; empty, no signature checks |
