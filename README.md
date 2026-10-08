@@ -641,9 +641,10 @@ default: a full CTAN mirror is under $2 a month. Things the engines know about i
   `when_required`.
 - R2 does not list keys in byte order, so every bucket listing is re-sorted before
   `join` or `comm`.
-- The single-part upload limit is 4.995 GiB; a mirror with a larger file sets
-  `multipart_threshold` and `multipart_chunksize` in an `aws.config` the Taskfile names
-  through `AWS_CONFIG_FILE`. A multipart upload costs one Class A operation per part.
+- The single-part upload limit is 4.995 GiB. The `rsync` image sets `AWS_CONFIG_FILE` to
+  its `/etc/aws.config`. There, `multipart_threshold` and `multipart_chunksize` make the
+  CLI send a file over 4 GiB in 512 MiB parts. A multipart upload costs one Class A
+  operation per part.
 - `DeleteObjects` takes 1,000 keys per call and is free.
 
 ## Monitoring

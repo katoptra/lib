@@ -56,7 +56,10 @@ RUN set -eu; \
     rsync --version | head -1; gpgv --version | head -1; xz --version | head -1; shasum --version
 
 # Inside a run there is no network for Taskfiles: the mirror's .task/remote cache rides
-# in with the bind mount. R2 has one region; the value is a literal, not a secret.
+# in with the bind mount. R2 has one region; the value is a literal, not a secret. Every
+# aws call reads its multipart and retry settings from /etc/aws.config.
+COPY docker/aws.config /etc/aws.config
 ENV TASK_REMOTE_OFFLINE=1 \
-    AWS_REGION=auto
+    AWS_REGION=auto \
+    AWS_CONFIG_FILE=/etc/aws.config
 WORKDIR /work

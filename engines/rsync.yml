@@ -390,9 +390,9 @@ tasks:
       - cat {{.RUN}}/labels.txt >> {{.RUN}}/labeled.txt
       # The CLI takes one --content-type a call and guesses from the name without one, so
       # each type's files go up from a tree of their own, RUN/up/N/, and come back for
-      # merge. cp --recursive never lists the destination: one PutObject per file,
-      # multipart only above the mirror's aws.config threshold. Keys are the paths under
-      # the tree, which are upstream's own.
+      # merge. cp --recursive never lists the destination. It sends each file as one
+      # PutObject, or in parts above the threshold in the image's aws.config. Keys are the
+      # paths under the tree, which are upstream's own.
       - {task: label-trees, vars: {TO: up}}
       - >-
         for d in {{.RUN}}/up/*/; do test -d "$d" || continue;
