@@ -756,8 +756,8 @@ flowchart TB
 
 On every pull request: checkout, lib at the same commit, the toolbox action without
 `op`, `task check`. No secret reaches it, so a pull request from a fork runs it safely. A
-mirror with more to check (an `offline` verb, a test suite) writes its own `check.yml`
-with the toolbox action and its own steps, as github and dropbox do.
+mirror with an `offline` verb passes `offline: true`, and the job then runs
+`task run -- task offline` inside the image.
 
 ### The toolbox action
 

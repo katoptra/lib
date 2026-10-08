@@ -1,7 +1,13 @@
 # Reusable: render the mirror's pipeline inside its image and diff it against render.txt.
+# With offline: true, the job then runs the mirror's offline verb inside the image.
 name: check
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      offline:
+        description: After task check, run task offline inside the image
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -17,3 +23,5 @@ jobs:
       - uses: ./.lib/.github/actions/toolbox
         with: {op: 'false'}   # a dry run needs no secrets
       - run: task check
+      - if: inputs.offline
+        run: task run -- task offline
