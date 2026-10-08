@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.7
-# The proton toolbox: Python plus the Proton Drive CLI, age and git, for the mirrors whose
-# sink is Proton Drive, whether their engine is engines/proton.yml or a Python package of
-# their own. The repo is bind-mounted at /work; PYTHONPATH finds its src/. Base pinned by
-# digest; every tool from toolchain.lock.toml at the build context, git and curl from apt.
+# The proton toolbox: Python, the Proton Drive CLI, age and git. It is for the mirrors
+# that send their bytes to Proton Drive. The engine of such a mirror can be
+# engines/proton.yml, or a Python package in the mirror. A bind mount puts the repo at
+# /work, and PYTHONPATH finds its src/. This file pins the base image with its digest.
+# toolchain.lock.toml at the build context supplies each tool, but apt supplies git and
+# curl.
 FROM python:3.13.15-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS fetch
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -10,8 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/lock.py /usr/local/bin/lock
 
-# Architecture from the image itself: BuildKit sets TARGETARCH, Apple container does
-# not, and a defaulted arg would install amd64 binaries into an arm64 image.
+# The build gets the architecture from the image. BuildKit sets TARGETARCH, but Apple
+# container does not. An arg with a default can install amd64 binaries into an arm64
+# image.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64|arm64) ;; *) echo "unsupported architecture: $arch" >&2; exit 1 ;; esac; \
@@ -33,10 +36,11 @@ COPY --from=fetch /usr/local/bin/proton-drive /usr/local/bin/age /usr/local/bin/
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/s3.py /usr/local/bin/s3
 
-# ponytail: botocore ships 432 service models and s3 calls one, so all but s3, sts and
-# the data-root *.json stay behind. Ceiling: a boto3 client for any other service dies on
-# a model lookup; add it to the keep list. pip leaves once the pins are in: a runtime
-# image has no business installing anything.
+# ponytail: botocore has 432 service models, and s3 uses one. Thus, this step keeps only
+# s3, sts and the *.json files at the data root. Ceiling: a boto3 client for a different
+# service stops with an error when it cannot find its model. For a different service, add
+# the service to the keep list. After this step installs the pinned packages, it removes
+# pip, because a runtime image must not install packages.
 RUN python - <<'PY'
 import pathlib, shutil, subprocess, tomllib
 lock = tomllib.load(open("/etc/toolchain.lock.toml", "rb"))
@@ -61,15 +65,16 @@ assert "@" + lock["proton_drive_cli"]["version"] in first(["proton-drive", "vers
 assert lock["age"]["version"] in first(["age", "--version"])
 assert lock["task"]["version"] in subprocess.check_output(["task", "--version"], text=True)
 assert first(["git", "--version"]).startswith("git version 2.")
-assert subprocess.run(["s3"], capture_output=True).returncode == 2   # usage; boto3 imports
+# s3 exits 2 when it prints how to use it. Thus, boto3 imports.
+assert subprocess.run(["s3"], capture_output=True).returncode == 2
 assert subprocess.run(["python", "-m", "pip"], capture_output=True).returncode == 1
 import boto3; boto3.client("s3", region_name="auto", aws_access_key_id="x", aws_secret_access_key="x")
 PY
 
-# Inside a run there is no network for Taskfiles: the mirror's .task/remote cache rides
-# in with the bind mount. R2 has one region and rejects the SDK's default checksum
-# headers; both values are literals, not secrets. The image has no keyring, so the
-# Proton CLI keeps its session as plain files.
+# In a run, there is no network for Taskfiles. The bind mount supplies the .task/remote
+# cache of the mirror. R2 has one region, and it rejects the default checksum headers of
+# the SDK. These values are literals, not secrets. The image has no keyring. Thus, the
+# Proton CLI keeps its session as files.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/work/src \
     TASK_REMOTE_OFFLINE=1 \

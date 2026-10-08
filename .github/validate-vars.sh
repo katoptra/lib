@@ -1,17 +1,21 @@
 #!/bin/sh
-# validate-vars.sh "RECONCILE=true MAX_BATCHES=8": refuse anything that is not space
-# separated KEY=value with an upper-case key and a plain value.
+# validate-vars.sh "RECONCILE=true MAX_BATCHES=8": reject each input that is not KEY=value
+# pairs with spaces between them. Each key must be upper case (A-Z and _). Each value must
+# contain only letters, digits, ".", "_", "/" and "-".
 #
-# The sync workflow splits this input into words and hands them to `task sync --`, where
-# each becomes a go-task variable the engine may splice into a command. Quoting every
-# splice would be the other fix, but one of them lands inside $(( )), where a quoted
-# operand is a syntax error, so the boundary is the place that can refuse the whole class.
+# The sync workflow divides this input into words and gives them to `task sync --`. There,
+# each word becomes a go-task variable, and the engine can put it into a command. Quotes
+# around each such variable are the other solution. But one variable is in $(( )), where a
+# quoted operand is a syntax error. Thus, this check, before the input goes into a
+# command, is the location that can reject the full class of bad input.
 #
-# `--check` runs this file's own cases instead, so the rule and its proof stay together.
+# With `--check`, this file does its test cases and does not examine an input. Thus, the
+# rule and its test cases stay together.
 set -eu
 
-# Byte collation, not the caller's: under a UTF-8 locale a range like [A-Z] also matches
-# lower case, which let a lower-case key through until this file's own cases caught it.
+# Byte collation, not the collation of the caller. In a UTF-8 locale, a range (for example
+# [A-Z]) also agrees with lower-case letters. Thus, without byte collation, the check can
+# accept a lower-case key.
 LC_ALL=C
 export LC_ALL
 
@@ -42,7 +46,7 @@ ok 'TL_KEY=C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC' 'a fingerprint'
 no 'RECONCILE=x; echo pwned'            'a command separator'
 no 'BATCH_GB=$(id)'                     'a command substitution'
 no 'MAX_BATCHES=`id`'                   'a backquote'
-no 'RECONCILE=x" = "x" ; echo pwned'    'the quote break-out from the review'
+no 'RECONCILE=x" = "x" ; echo pwned'    'a quote break-out'
 no 'A=b|c'                              'a pipe'
 no 'A=b&c'                              'an ampersand'
 no 'A=b>c'                              'a redirect'

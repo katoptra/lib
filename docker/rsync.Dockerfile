@@ -1,20 +1,22 @@
 # syntax=docker/dockerfile:1.7
-# The rsync toolbox: what every rsync-to-R2 mirror runs inside, on a laptop and in
-# Actions alike. The repo is bind-mounted at /work. Base pinned by digest; every tool
-# comes from toolchain.lock.toml at the repo root, which is the build context.
+# The rsync toolbox: the image in which each rsync-to-R2 mirror operates, on a laptop and
+# in Actions. A bind mount puts the repo at /work. This file pins the base image with its
+# digest. toolchain.lock.toml at the root of the repo (the build context) supplies each
+# tool.
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS fetch
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 gnupg gpgv \
  && rm -rf /var/lib/apt/lists/*
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/lock.py /usr/local/bin/lock
-# The trust root for the AWS CLI zip, which upstream publishes with a signature and no
-# checksum. Armoured so a key change reads as a diff. This stage is discarded, so gnupg
-# and the key cost the shipped image nothing.
+# The trust root for the AWS CLI zip. Upstream publishes the zip with a signature and no
+# checksum. The key is ASCII-armored. Thus, a change of the key shows as a diff. The build
+# does not keep this stage. Thus, gnupg and the key do not go into the toolbox image.
 COPY docker/aws-cli.pub /etc/aws-cli.pub
 
-# Architecture from the image itself: BuildKit sets TARGETARCH, Apple container does
-# not, and a defaulted arg would install amd64 binaries into an arm64 image.
+# The build gets the architecture from the image. BuildKit sets TARGETARCH, but Apple
+# container does not. An arg with a default can install amd64 binaries into an arm64
+# image.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) m=x86_64 ;; arm64) m=aarch64 ;; *) echo "unsupported architecture: $arch" >&2; exit 1 ;; esac; \
@@ -35,8 +37,9 @@ RUN set -eu; \
 
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS toolbox
 
-# perl carries shasum; gpgv alone, since the engine verifies and never signs. Each RUN
-# deletes its own scratch: a layer keeps what it leaves.
+# perl contains shasum. The image has gpgv and not gnupg, because the engine examines
+# signatures and does not make them. Each RUN removes its temporary files, because a
+# layer keeps each file that its RUN does not remove.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       rsync gpgv xz-utils curl ca-certificates perl python3 \
  && rm -rf /var/lib/apt/lists/*
@@ -46,18 +49,19 @@ RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws
 COPY toolchain.lock.toml /etc/toolchain.lock.toml
 COPY docker/lock.py /usr/local/bin/lock
 
-# ponytail: botocore ships 432 service models and the pipelines call one, so all but s3,
-# sts and the data-root *.json stay behind. Ceiling: an `aws` call to any other service
-# dies on a model lookup; add it to the keep list in the fetch stage.
+# ponytail: botocore has 432 service models, and the pipelines use one. Thus, the fetch
+# stage keeps only s3, sts and the *.json files at the data root. Ceiling: an `aws`
+# command for a different service stops with an error when it cannot find its model. For a
+# different service, add the service to the keep list in the fetch stage.
 RUN set -eu; \
     task --version | grep -q "$(lock task.version)"; \
     aws --version | grep -q "aws-cli/$(lock awscli.version)"; \
     aws s3 ls s3://x --no-sign-request --endpoint-url http://127.0.0.1:1 2>&1 | grep -qiE 'connect|endpoint|refused'; \
     rsync --version | head -1; gpgv --version | head -1; xz --version | head -1; shasum --version
 
-# Inside a run there is no network for Taskfiles: the mirror's .task/remote cache rides
-# in with the bind mount. R2 has one region; the value is a literal, not a secret. Every
-# aws call reads its multipart and retry settings from /etc/aws.config.
+# In a run, there is no network for Taskfiles. The bind mount supplies the .task/remote
+# cache of the mirror. R2 has one region. The value is a literal, not a secret. Each
+# aws command reads its multipart and retry configuration from /etc/aws.config.
 COPY docker/aws.config /etc/aws.config
 ENV TASK_REMOTE_OFFLINE=1 \
     AWS_REGION=auto \

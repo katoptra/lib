@@ -1,5 +1,6 @@
-# Reusable: render the mirror's pipeline inside its image and diff it against render.txt.
-# With offline: true, the job then runs the mirror's offline verb in the image.
+# A reusable workflow: it renders the pipeline of the mirror in its image, and it compares
+# the render with render.txt. With offline: true, the job then starts the offline verb of
+# the mirror in the image.
 name: check
 on:
   workflow_call:
@@ -16,12 +17,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # This repository at the commit the caller pinned this workflow to, so the toolbox
-      # action and the lock it reads are the release the workflow is: one pin, not two.
+      # This repository at the commit to which the caller pinned this workflow. Thus, the
+      # toolbox action and the lock that it reads are of the same release as the workflow:
+      # one pin, not two.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {repository: katoptra/lib, ref: '${{ github.job_workflow_sha }}', path: .lib}
       - uses: ./.lib/.github/actions/toolbox
-        with: {op: 'false'}   # a dry run needs no secrets
+        with: {op: 'false'}   # a dry run uses no secrets
       - run: task check
       - if: inputs.offline
         run: task run -- task offline

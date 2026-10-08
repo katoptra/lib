@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""s3 get KEY FILE | s3 put FILE KEY: one object of the bucket MIRROR_R2_BUCKET names.
+"""s3 get KEY FILE | s3 put FILE KEY: one object of the bucket that MIRROR_R2_BUCKET gives.
 
-The proton image's S3 client, for the mirrors whose engine keeps a Proton session in the
-bucket. Credentials and the endpoint come from the environment as boto3 reads them:
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL_S3. `get` exits 3 when the
-key is absent, so a caller can tell a missing object from a failed read. A failure prints
-its class alone: the message may carry the endpoint, and the logs are public.
+The S3 client of the proton image, for the mirrors with an engine that keeps a Proton
+session in the bucket. boto3 reads the credentials and the endpoint from the environment:
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL_S3. `get` exits 3 when the
+key is not there. Thus, a caller can find the difference between a missing object and a
+read failure. A failure prints only its class, because the message can contain the
+endpoint, and all persons can read the logs.
 """
 
 import os

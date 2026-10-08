@@ -1,11 +1,13 @@
 #!/bin/sh
-# chain-file.sh "$GITHUB_WORKFLOW_REF": print the caller's own workflow file, the argument
-# to `gh workflow run` when a run chains the next one.
+# chain-file.sh "$GITHUB_WORKFLOW_REF": print the workflow file of the caller. This is the
+# argument to `gh workflow run` when a run chains the next run.
 #
-# The ref is owner/repo/.github/workflows/<file>@<ref>, and <ref> holds slashes of its own
-# (refs/heads/main), so the @ and everything after it come off before the path does.
+# The ref is owner/repo/.github/workflows/<file>@<ref>, and <ref> can also contain slashes
+# (refs/heads/main). Thus, the script first removes the @ and all the text after it. Then
+# it removes the path.
 #
-# `--check` runs this file's own cases instead, so the rule and its proof stay together.
+# With `--check`, this file does its test cases and prints no file name. Thus, the rule
+# and its test cases stay together.
 set -eu
 
 chain_file() {

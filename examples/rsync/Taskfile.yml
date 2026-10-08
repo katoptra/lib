@@ -1,9 +1,11 @@
-# A consumer of the toolbox and the rsync engine, with the rsync image. Inside this repo
-# the includes are paths; a mirror includes
-# https://raw.githubusercontent.com/katoptra/lib/v1/toolbox.yml and
-# https://raw.githubusercontent.com/katoptra/lib/v1/engines/rsync.yml. The pipeline is
-# the engine's; render.txt, every command of it, is the library's own check of the engine,
-# and `task run -- task offline` runs the verbs that need no bucket over fixtures/.
+# A Taskfile that includes the toolbox and the rsync engine, with the rsync image. In this
+# repo, the includes are paths. A mirror includes these URLs:
+#   - https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
+#   - https://raw.githubusercontent.com/katoptra/lib/v2/engines/rsync.yml
+#
+# The pipeline is the pipeline of the engine. render.txt holds each command of the
+# pipeline. render.txt is the check of the engine in this library.
+# `task run -- task offline` does the verbs that use no bucket, on fixtures/.
 version: '3'
 vars:
   SOURCE: rsync://rsync.example.org/pub/
@@ -40,49 +42,63 @@ tasks:
     desc: Every engine verb that needs no bucket, over fixtures/ copied under .run, inside the image
     vars:
       F: '{{.RUN}}/fixtures'
-      # fixtures/tree is a signed subtree, tl/, the shape of TeX Live's: a tlpdb naming one
-      # package's containers, its sha512 signed by a throwaway key whose public half is the
-      # tree's own keyring, as upstream's is. FP is what a mirror pins as TL_KEY.
+      # fixtures/tree is a signed subtree, tl/, with the shape of the TeX Live tree. Its
+      # tlpdb identifies the containers of one package. A temporary key gives the
+      # signature of its sha512. The public key of that key is in the keyring of the tree.
+      # Upstream also keeps its keyring in its tree. FP is the value that a mirror pins as
+      # TL_KEY.
       TREE: '{{.ROOT_DIR}}/fixtures/tree/'
-      LOCAL: rsync --no-h   # a local tree; the engine's daemon-only flags are a usage error here
+      # A local tree. Here, the daemon-only flags of the engine are a usage error.
+      LOCAL: rsync --no-h
       FP: 3505F9E22FF030FE5D9C655A825C376AB4571163
-      # run-pages/want/ is ctan's page set for that state as ctan.katoptra.org serves it: its
-      # INDEX, and the closing line that links the directory on ctan.org.
+      # run-pages/want/ is the page set of ctan for that state. It is the same as the
+      # pages that ctan.katoptra.org sends. It has the INDEX of ctan, and a last line with
+      # a link to the directory on ctan.org.
       CTAN_INDEX: ctan.katoptra.org.directory.index.html
       CTAN_FOOT: '<a href="https://ctan.org/tex-archive/%s">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.'
     cmds:
-      # list and normalise over a local tree: its two regular files, byte-sorted, and no directory.
+      # list and normalise on a local tree: its two regular files, sorted with byte
+      # collation, and no directory.
       - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
       - test "$(cut -f1 {{.RUN}}/upstream.txt | tr '\n' ' ')" = "a/b/f.txt timestamp "
-      # The verbs write beside what they read, so they work on a copy.
+      # The verbs write their files adjacent to the files that they read. Thus, they
+      # operate on a copy.
       - rm -rf {{.F}} && cp -R {{.ROOT_DIR}}/fixtures {{.F}}
-      # run-root: the hour in which one bucket-root file changed. diff finds it, merge takes it
-      # from staging into the state, and split makes it the one batch, the decision batch.
+      # run-root: the hour in which one file at the bucket root changed. diff finds it.
+      # merge records it in the state, from staging. split makes it the one batch, the
+      # decision batch.
       - {task: diff, vars: {RUN: '{{.F}}/run-root'}}
       - test "$(cut -f1 {{.F}}/run-root/changed.txt)" = timestamp && test ! -s {{.F}}/run-root/deleted.txt
       - {task: merge, vars: {RUN: '{{.F}}/run-root', STAGING: '{{.F}}/run-root/staging', B: '{{.F}}/run-root/changed.txt'}}
       - cmp {{.F}}/run-root/applied.new {{.F}}/run-root/upstream.txt
       - {task: split, vars: {RUN: '{{.F}}/run-root', STAGING: '{{.F}}/staging'}}
       - test "$(ls {{.F}}/run-root/batch-*.txt | wc -l)" -eq 1 && cmp {{.F}}/run-root/batch-0001.txt {{.F}}/run-root/changed.txt
-      # run-empty: the batch names a file that vanished upstream before fetch, so staging never
-      # received it; merge drops it, and the state never names a key the bucket lacks.
+      # run-empty: the batch identifies a file that upstream removed before fetch. Thus,
+      # staging did not get it. merge removes it, and the state does not identify a key
+      # that the bucket does not have.
       - {task: diff, vars: {RUN: '{{.F}}/run-empty'}}
       - {task: merge, vars: {RUN: '{{.F}}/run-empty', STAGING: '{{.F}}/run-empty/staging', B: '{{.F}}/run-empty/changed.txt'}}
       - cmp {{.F}}/run-empty/applied.new {{.F}}/run-empty/applied.txt
-      # run-resign: upstream wrote x.exe's sha512 and signature again and left x.exe alone,
-      # as TeX Live's nightly build does to its prebuilt installer. diff takes x.exe back
-      # into the delta so verify has the file the sha512 names; y.exe, unmoved, stays out.
+      # run-resign: upstream wrote the sha512 and the signature of x.exe again, and it did
+      # not change x.exe. Each night, the build of TeX Live does this to its prebuilt
+      # installer. diff puts x.exe back into the delta. Thus, verify has the file that the
+      # sha512 identifies. y.exe did not change, and it stays out of the delta.
       - {task: diff, vars: {RUN: '{{.F}}/run-resign', TL: tl}}
       - test "$(cut -f1 {{.F}}/run-resign/changed.txt | tr '\n' ' ')" = "tl/x.exe tl/x.exe.sha512 tl/x.exe.sha512.asc "
-      # retry: 23 and 24 are successes, a transport code is retried five times, anything else is final.
+      # retry: retry accepts exit codes 23 and 24. After a transport exit code, retry
+      # tries again five times. Each other exit code stops retry.
       - task retry CMD='exit 23' RETRY_BASE=0
       - task retry CMD='exit 24' RETRY_BASE=0
       - '! task retry CMD=''exit 5'' RETRY_BASE=0 2>/dev/null'
       - '! task retry CMD=''exit 3'' RETRY_BASE=0 2>/dev/null'
-      # due-rule, a run starting at 1000000: auto reconciles with none on record and at 23 h
-      # 50 min, not at under 3 h, unless RECONCILE_HOURS is 2 or RECONCILE=true; false never
-      # does. A RECONCILE that is none of the three stops the run, and so does an hour count
-      # that is not a whole number from 1 (08 would read as octal).
+      # due-rule, for a run that starts at 1000000:
+      #   - auto reconciles with no last reconcile, and at 23 h 50 min.
+      #   - auto does not reconcile at less than 3 h, unless RECONCILE_HOURS is 2 or
+      #     RECONCILE=true.
+      #   - false does not reconcile.
+      #   - A RECONCILE that is not one of the three values stops the run.
+      #   - An hour count that is not an integer of 1 or more stops the run. The shell
+      #     reads 08 as octal.
       - mkdir -p {{.F}}/due && echo 1000000 > {{.F}}/due/start.txt
       - {task: due-rule, vars: {RUN: '{{.F}}/due'}}
       - test -f {{.F}}/due/reconcile
@@ -101,45 +117,61 @@ tasks:
       - task due-refuses R=yes 2>&1 | grep -q 'RECONCILE is true, false or auto'
       - task due-refuses H=abc 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
       - task due-refuses H=08 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
-      # run-tl: the signed subtree. prepare fetches the control files from the tree and checks
-      # the signed sha512 against the pinned key; fetch stages the batch; verify checks the
-      # signed file it carries, every container against the tlpdb under both of its names
-      # (three sums: the stable and the revision-stamped container, and the doc container),
-      # and, the batch carrying the tlpdb, the decision batch whole. Staged in the engine's
-      # own STAGING: verify's dir is fixed when the include is read, so no call var moves it.
+      # run-tl: the signed subtree.
+      #   1. prepare downloads the control files from the tree. It examines the signed
+      #      sha512 with the pinned key.
+      #   2. fetch puts the batch in staging.
+      #   3. verify examines the signed file in the batch. It examines each container with
+      #      the tlpdb, with the two names of the container (three sums: the stable
+      #      container, the revision-stamped container and the doc container). The batch
+      #      holds the tlpdb. Thus, verify also examines the full decision batch.
+      #
+      # The batch is in the STAGING of the engine, because the calls to fetch and verify
+      # give no STAGING. verify starts each command with `cd {{.STAGING}}`. Thus, a
+      # STAGING call var can move the directory of verify.
       - {task: prepare, vars: {RUN: '{{.F}}/run-tl', SOURCE: '{{.TREE}}', RSYNC: '{{.LOCAL}}', TL: tl, TL_KEY: '{{.FP}}'}}
       - test -f {{.F}}/run-tl/tl/tlpkg/texlive.tlpdb
       - {task: fetch, vars: {RUN: '{{.F}}/run-tl', SOURCE: '{{.TREE}}', RSYNC: '{{.LOCAL}}', B: '{{.F}}/run-tl/batch-0001.txt'}}
       - {task: verify, vars: {RUN: '{{.F}}/run-tl', B: '{{.F}}/run-tl/batch-0001.txt', TL: tl, TL_KEY: '{{.FP}}'}}
       - test "$(wc -l < {{.F}}/run-tl/tl/sums.txt)" -eq 3 && test ! -s {{.F}}/run-tl/tl/missing.txt
-      # A container the tlpdb does not describe cannot pass, whatever its bytes.
+      # verify rejects a container that the tlpdb does not identify, independently of its
+      # bytes.
       - '! task verify-refuses 2>/dev/null'
-      # run-pages: the state gained a file whose name carries & < > and a directory whose name
-      # carries a space, and lost gone/. pages draws the root, a/, a/b/ and a/sp ace/, each
-      # under both of its keys (the root under one), and names gone/'s two keys for removal.
-      # Every byte must be what want/ holds.
+      # run-pages: the new state has a file with & < > in its name, and a directory with a
+      # space in its name. gone/ is not in the new state. pages makes the pages of the
+      # root, a/, a/b/ and a/sp ace/, each with its two keys (the root with one). It also
+      # gives the two keys of gone/ for removal. Each byte must agree with want/.
       - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}'}}
       - diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
       - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
       - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
-      # run-smoke: an hour whose only change is timestamp, whose one redrawn page is the root.
-      # smoke reads timestamp back and sizes it against the listing, then the root page under
-      # its INDEX key (a filesystem cannot hold the slashless key beside it). Over file:// the
-      # canary and the Content-Encoding check say they skipped. Last, fresh reads the clock
-      # in timestamp, the FRESH_KEY file. The first command below writes the current time
-      # into it, at the 11 bytes that the listing records.
+      # run-smoke: an hour with one change only, timestamp, and one new page only, the
+      # root. smoke reads timestamp again, and it compares its size with the listing. Then
+      # it reads the root page at its INDEX key (a filesystem cannot hold the slashless
+      # key adjacent to it). With file://, the canary and the Content-Encoding check show
+      # that they did not operate.
+      #
+      # Last, fresh reads the clock in timestamp, the FRESH_KEY file. The first command
+      # that follows writes the time of the check into it, in the 11 bytes that the
+      # listing records.
       - date -u +%s > {{.F}}/run-smoke/staging/timestamp
       - {task: smoke, vars: {RUN: '{{.F}}/run-smoke', STAGING: '{{.F}}/run-smoke/staging', URL: 'file://{{.F}}/run-smoke/staging'}}
-      # A page index drew that is not in staging cannot pass.
+      # smoke rejects a page that index made and that is not in staging.
       - '! task smoke-refuses 2>/dev/null'
-      # run-label, made here because its names and bytes are the point: every rule label
-      # keeps. A COMPRESSED ending wins over the rest of the name (a.diff.gz, c.tgz, l.Z); a
-      # drawn type the bytes contradict gives way to them (d.txt with a NUL, f.pdf that is
-      # gzip); a type nothing contradicts stands (g.sig, h.xpi, j.sty with a ^Z, sub/i.html);
-      # a name with no type is typed from the bytes (README, empty k, m and n); an ending
-      # Python reads as compressed and COMPRESSED lacks is never text (q.txt.br); and a
-      # colon is no URL scheme (data:p.html). label-trees then moves all but timestamp out,
-      # one tree per type, and back, and staging is byte for byte what it was.
+      # run-label: the command makes it here, because this test is about its names and its
+      # bytes. It has a test case for each rule of label:
+      #   - A COMPRESSED ending is more important than the remaining part of the name
+      #     (a.diff.gz, c.tgz, l.Z).
+      #   - When the bytes do not agree with a type that a browser shows, the type of the
+      #     bytes is the label (d.txt with a NUL, f.pdf that is gzip).
+      #   - When nothing shows that a type is incorrect, the type stays (g.sig, h.xpi,
+      #     j.sty with a ^Z, sub/i.html).
+      #   - A name with no type gets a type from its bytes (README, the empty k, m and n).
+      #   - An ending that Python reads as compressed and that COMPRESSED does not have is
+      #     not text (q.txt.br).
+      #   - A colon is not a URL scheme (data:p.html).
+      # label-trees then moves each file other than timestamp out, one tree for each type,
+      # and then back. After that, staging has the same bytes that it had at the start.
       - |
         d={{.F}}/run-label/staging; mkdir -p $d/sub
         printf '\037\213\010' > $d/a.diff.gz; printf '\375\067\172\130\132\000' > $d/b.tar.xz
@@ -162,8 +194,11 @@ tasks:
       - test "$(cd {{.F}}/run-label/staging && find . -type f)" = ./timestamp && test "$(ls {{.F}}/run-label/up/*.type | wc -l)" -eq 11
       - {task: label-trees, vars: {TO: staging, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
       - diff -r {{.F}}/run-label/before {{.F}}/run-label/staging && test ! -e {{.F}}/run-label/up
-      # fresh over three clocks served off a filesystem: Unix time an hour old and CTAN's
-      # dated form two hours old pass; Unix time two days old, Savannah's layout, fails.
+      # fresh on three clocks, from a filesystem:
+      #   - fresh accepts a Unix time one hour before the check, and a date in the format
+      #     of CTAN two hours before the check.
+      #   - fresh rejects a Unix time two days before the check, in the format of
+      #     Savannah.
       - |
         r={{.F}}/run-fresh; mkdir -p $r/srv; now=$(date -u +%s)
         echo $((now - 3600)) > $r/srv/new.txt

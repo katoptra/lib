@@ -1,44 +1,55 @@
-# The toolbox: every verb a katoptra mirror has whatever moves its bytes. A mirror
-# includes this file flattened and passes NAME and DESC on the include. It passes IMAGE
-# there too, unless the engine names the image. The mirror keeps its identity in its own
-# root vars. Three verbs come from outside this file and run inside IMAGE: pipeline,
-# plan-pipeline and report-engine. An engine include supplies them, and a mirror with no
-# engine defines them. A verb listed under the include's excludes: and defined in the
-# mirror replaces the one here.
+# The toolbox: the verbs that each katoptra mirror has, independently of the code that
+# moves its bytes. A mirror includes this file with `flatten: true`, and it sets NAME and
+# DESC on the include. It also sets IMAGE there, unless the engine sets IMAGE. The mirror
+# keeps the values that identify it in its root vars.
 #
-# Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
-# the mirror's value; defaults go inline), and host-side and in-container verbs share
-# one namespace, so the names below are reserved, and so is the engine vocabulary a
-# second include adds beside them. The rsync engine's: pipeline, plan-pipeline, list,
-# normalise, state, pull, push, rebuild, diff, split, batches, batch, fetch, publish,
-# label, label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages, fresh,
-# and the hooks prepare, verify, index, smoke and smoke-mirror. The proton engine's: session, session-push, seal,
-# session-seal, age, pull, push, pd, destination, upload, confirm, list-folder, trash,
-# empty-trash, empty-trash-pipeline, and the hooks stage and prune.
+# Three verbs are not in this file, and they operate in IMAGE: pipeline, plan-pipeline and
+# report-engine. An engine include supplies them. A mirror with no engine writes them in
+# its Taskfile. To replace a verb here, a mirror puts its name in `excludes:` on the
+# include and writes a verb with that name.
+#
+# Rules that this file obeys:
+#   - No `vars:` default for a value that a mirror sets. With a default here, task does
+#     not use the value of the mirror. Each default is inline.
+#   - The verbs on the host and the verbs in the container use one namespace. Thus, the
+#     names of the verbs in this file are not available for other verbs. The names that an
+#     engine include adds are also not available:
+#       - The rsync engine: pipeline, plan-pipeline, list, normalise, state, pull, push,
+#         rebuild, diff and split. Also batches, batch, fetch, publish, label,
+#         label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages, smoke
+#         and fresh. Its hooks are prepare, verify, index, smoke-mirror and report-engine.
+#       - The proton engine: pipeline, plan-pipeline, session, session-push, seal,
+#         session-seal, age, pull, push, pd, destination, upload, confirm, list-folder,
+#         trash, empty-trash and empty-trash-pipeline. Its hooks are stage, prune and
+#         report-engine.
 version: '3'
 
 vars:
   RUN: '{{.ROOT_DIR}}/.run'
   STAGING: '{{.ROOT_DIR}}/staging'
-  # The container runtime, not the sync engine: Apple container when its daemon is up,
-  # else Docker. ENGINE=docker forces Docker.
+  # The container runtime, not the sync engine. It is Apple container when the daemon of
+  # Apple container operates. If not, it is Docker. ENGINE=docker always selects Docker.
   ENGINE:
     sh: |
       if [ -n "$ENGINE" ]; then echo "$ENGINE"
       elif command -v container >/dev/null 2>&1 && container system status >/dev/null 2>&1; then echo container
       else echo docker; fi
-  # Names cross into the container; values never appear on a command line. op.env
-  # names, the mirror's PASS list, and what the Actions job summary needs.
+  # Only names go into the container. No value is on a command line. The names are:
+  #   - each name in op.env
+  #   - each name in the PASS list of the mirror
+  #   - the names that the Actions job summary uses.
   PASS_ENV:
     sh: |
       { test -f {{.ROOT_DIR}}/op.env && grep -v '^#' {{.ROOT_DIR}}/op.env | sed -n 's/=.*//p'; true; } | sed 's/^/-e /' | tr '\n' ' '
       for v in {{.PASS}} GITHUB_STEP_SUMMARY GITHUB_RUN_ID HEALTHCHECK_URL; do printf '%s %s ' -e "$v"; done
-  # The image variant is the tag up to its version: ghcr.io/katoptra/toolbox:rsync-v1 -> rsync.
+  # The image variant is the part of the tag before its version:
+  # ghcr.io/katoptra/toolbox:rsync-v2 -> rsync.
   VARIANT:
     sh: echo "{{.IMAGE}}" | sed 's/.*://; s/-v[0-9].*//; s/-dev$//'
-  # The repository's top level rides in at /work and the Taskfile's directory is the
-  # working directory. For a mirror the two are the same; for the examples in
-  # katoptra/lib the include one level up must be reachable.
+  # The container gets the top level of the repository at /work. The working directory is
+  # the directory of the Taskfile. For a mirror, these two are the same. For the examples
+  # in katoptra/lib, the include two levels up (../../toolbox.yml) must be available in
+  # the container.
   TOP:
     sh: git -C {{.ROOT_DIR}} rev-parse --show-toplevel 2>/dev/null || echo {{.ROOT_DIR}}
   PREFIX:
@@ -48,8 +59,9 @@ tasks:
   default:
     desc: Print the menu
     silent: true
-    # ponytail: hand-maintained listing -- go-task can neither group nor annotate, so a
-    # new verb means a line below. `task --list` stays the generated view.
+    # ponytail: a menu that we write manually. go-task cannot put verbs in groups, and it
+    # cannot add a comment to a verb. Thus, each new verb must have a line in the menu.
+    # `task --list` stays the view that go-task makes.
     cmds:
       - |
         b=$(printf '\033[1m'); c=$(printf '\033[1;36m'); d=$(printf '\033[2m'); r=$(printf '\033[0m')
@@ -82,7 +94,8 @@ tasks:
     run: once
     status: ['{{.ENGINE}} image inspect {{.IMAGE}} >/dev/null 2>&1']
     cmds:
-      # image pull, not pull: Apple container has no top-level pull, Docker has both.
+      # `image pull`, not `pull`: Apple container has no top-level `pull`. Docker has the
+      # two.
       - '{{.ENGINE}} image pull {{.IMAGE}}'
 
   image-build:
@@ -98,10 +111,15 @@ tasks:
   run:
     desc: 'Run a command inside the toolbox with the repo at /work: task run -- task --list'
     deps: [image]
-    # Neither -i nor -t: Apple container leaves the host terminal non-blocking after a
-    # run that attaches stdin or a tty. Output still streams and Ctrl-C still stops it.
-    # GITHUB_STEP_SUMMARY is a host path, mounted at the very path its value names.
-    # Each argument re-quoted, so task run -- sh -c 'a; b' arrives intact.
+    # No -i and no -t. After a run that attaches stdin or a tty, Apple container lets the
+    # host terminal stay in non-blocking mode. Without these flags, the output continues
+    # to show while the command operates, and Ctrl-C continues to stop it.
+    #
+    # GITHUB_STEP_SUMMARY is a path on the host. The container gets it at the same path
+    # that its value gives.
+    #
+    # The command uses shellQuote on each argument. Thus, the container gets the arguments
+    # of `task run -- sh -c 'a; b'` with no change.
     cmds:
       - >-
         {{.ENGINE}} run --rm
@@ -114,11 +132,13 @@ tasks:
   op:
     desc: 'Run a command inside the toolbox with secrets from 1Password: task op -- task pipeline'
     vars:
-      # ARGS from sync and plan; the words after -- by hand. Each re-quoted, so
-      # task op -- sh -c 'a; b' arrives intact.
+      # sync and plan set ARGS. Manually, the command is the words after --. CMD uses
+      # shellQuote on each word. Thus, the container gets the arguments of
+      # `task op -- sh -c 'a; b'` with no change.
       CMD: '{{if .ARGS}}{{.ARGS}}{{else}}{{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}{{end}}'
     cmds:
-      # No op.env means the secrets are already in the environment (GitHub secrets, say).
+      # With no op.env, the secrets are in the environment before this command starts (for
+      # example, GitHub secrets).
       - |
         if test -f op.env; then op run --env-file=op.env -- task run -- {{.CMD}}
         else task run -- {{.CMD}}; fi
@@ -129,18 +149,21 @@ tasks:
       - rm -rf {{.RUN}} {{.STAGING}} {{.ROOT_DIR}}/.task
 
   # ---- pipeline ----
-  # The words after -- are task vars for the pipeline inside the image: task sync --
-  # MAX_BATCHES=8 RECONCILE=true. A KEY=value before -- would set a host-side var only.
-  # The failure path runs inside the same container, so 1Password is read once per run
-  # whatever the outcome; a second op run for the ping would be a second read.
+  # The words after -- are task vars for the pipeline in the image, for example
+  # `task sync -- MAX_BATCHES=8 RECONCILE=true`. A KEY=value before -- sets only a var on
+  # the host.
+  #
+  # The failure path operates in the same container. Thus, a run reads 1Password only one
+  # time, also after a pipeline failure. A second `op run` for the ping reads it a second
+  # time.
   sync:
-    desc: 'One run, inside the toolbox: task sync -- MAX_BATCHES=8'
+    desc: 'One run, inside the toolbox: task sync -- [K=v ...]'
     cmds:
       - task: op
         vars: {ARGS: "sh -c 'task pipeline \"$@\" || { task failed; exit 1; }' sh {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}"}
 
   plan:
-    desc: 'The read-only half, inside the toolbox: task plan -- RECONCILE=true'
+    desc: 'The read-only half, inside the toolbox: task plan -- [K=v ...]'
     cmds:
       - task: op
         vars: {ARGS: 'task plan-pipeline {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}'}
@@ -149,13 +172,19 @@ tasks:
   render:
     desc: Render every command of the pipeline inside the toolbox, run none, save to .run/render.txt
     deps: [image]
-    # Not via `run`: the output is the artifact, so it is captured, not streamed, and a
-    # dry run needs no secrets, so no names cross into the container. task writes the
-    # rendered commands to stderr; the redirect inside the container folds them into
-    # stdout, so the engine's own progress lines on the host's stderr stay out of the file.
-    # An empty directory is mounted over .run, so a var read from it at parse time (an
-    # engine's batch list, say) renders the same from any working tree, a plan just run
-    # included.
+    # This verb does not use `run`:
+    #   - The output is the artifact. Thus, the verb writes the output to a file, and it
+    #     does not show the output while task operates.
+    #   - A dry run uses no secrets. Thus, no names go into the container.
+    #
+    # task writes the rendered commands to stderr. The redirect in the container sends
+    # them to stdout. Thus, the lines that the container engine writes to the stderr of
+    # the host do not go into the file.
+    #
+    # The verb puts an empty directory at .run in the container. A var that task reads
+    # from .run when it parses the Taskfile (for example, the batch list of an engine)
+    # thus renders the same in all working trees. This is also correct for a tree that
+    # holds the .run of a plan.
     cmds:
       - mkdir -p {{.RUN}}
       - >-
@@ -177,22 +206,27 @@ tasks:
       - task: render
       - cp {{.RUN}}/render.txt render.txt
 
-  # ---- inside the toolbox ----
+  # ---- in the toolbox ----
   clock:
     desc: Record the run's start epoch in .run/start.txt, and forget the last run's chain file and reconcile decision
-    # An engine's batches writes the chain file when work remains, and the workflow
-    # queues the next run on it; a run that works no batches must not inherit one, nor a
-    # pipeline without due the last run's .run/reconcile.
+    # The batches verb of an engine writes the chain file when there is more work. When
+    # the chain file is there, the workflow queues the next run. A run that does no
+    # batches must not get the chain file of the last run. A pipeline without due must not
+    # get the .run/reconcile of the last run.
     cmds:
       - mkdir -p {{.RUN}} && rm -f {{.RUN}}/chain {{.RUN}}/reconcile && date -u +%s > {{.RUN}}/start.txt
 
-  # A reconcile is due by the age of the last one, never by the hour or day a run starts:
-  # the schedule lives outside the mirror and moves. The last one is the start epoch of
-  # the run that finished it, kept at .state/reconciled through the engine's pull and push
-  # (xz under the rsync engine, as its state is); a mirror with no engine that reconciles
-  # defines those two itself. RECONCILE=true forces a reconcile and false skips it; auto,
-  # the default, reconciles once the last is RECONCILE_HOURS old (24, or the mirror's root
-  # var) or there is none on record.
+  # The time since the last reconcile sets when a reconcile is due. The hour or the day
+  # that a run starts does not, because the schedule is not in the mirror and its times
+  # can change. The last reconcile is the start epoch of the run that completed it. The
+  # pull and push verbs of the engine keep it at .state/reconciled. The rsync engine
+  # compresses it and its state with xz. A mirror with no engine that reconciles writes
+  # these two verbs in its Taskfile.
+  #   - RECONCILE=true always reconciles.
+  #   - RECONCILE=false does not reconcile.
+  #   - RECONCILE=auto, the default, reconciles when the time since the last reconcile is
+  #     RECONCILE_HOURS or more, or when there is no last reconcile. RECONCILE_HOURS is
+  #     24, or the root var of the mirror.
   due:
     desc: Decide whether this run reconciles, leaving .run/reconcile when it does; RECONCILE=true always, false never, auto once the last reconcile is RECONCILE_HOURS (24) old
     cmds:
@@ -202,10 +236,11 @@ tasks:
   due-rule:
     desc: The rule due applies, over .run/start.txt and .run/reconciled
     cmds:
-      # Half an hour short of the mark: a daily run starts seconds either side of 24 h after
-      # the one before, and a strict 24 h would reconcile every other day. A last time that
-      # does not read as a number is none; a leading zero would read as octal, so neither
-      # value may carry one.
+      # The limit is 30 minutes less than RECONCILE_HOURS. A daily run starts some seconds
+      # before or after 24 h from the run before it. If the limit is 24 h, a reconcile
+      # occurs only each second day. A last time that is not a number counts as no
+      # reconcile. The shell reads a number that starts with a zero as octal. Thus, the
+      # two values must not start with a zero.
       - |
         rm -f {{.RUN}}/reconcile
         r={{shellQuote (.RECONCILE | default "auto")}}; h={{.RECONCILE_HOURS | default 24}}
@@ -237,17 +272,23 @@ tasks:
     cmds:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail"
 
-  # One verb, so the workflow can run it too, for a run the runner cut off: a timeout, a
-  # cancellation, an image that never pulled. sync runs it in the pipeline's own container.
+  # One verb. Thus, the workflow can also start it when the runner stopped a run:
+  #   - after a timeout
+  #   - after a cancellation
+  #   - after an image pull that did not complete.
+  # sync starts it in the container of the pipeline.
   failed:
     desc: 'The failure path: the run summary marked failed, then the fail ping'
     cmds:
       - task report STATUS=failed || true
       - {task: ping-fail}
 
-  # One table, three layers: the rows below, then the engine's, then the mirror's, each
-  # a "| Label | value |" line appended to the same file. Every row tolerates a missing
-  # file, because the report also runs after a failed pipeline.
+  # One table, in three layers, in this sequence:
+  #   1. the rows of this verb
+  #   2. the rows of the engine
+  #   3. the rows of the mirror.
+  # Each row is a "| Label | value |" line, appended to the same file. Each row accepts a
+  # missing file, because the report also operates after a pipeline failure.
   report:
     desc: Append the run summary to the Actions job page (stdout elsewhere), base rows then the engine's then the mirror's
     silent: true
@@ -265,4 +306,4 @@ tasks:
         EOF
       - {task: report-engine}
       - {task: report-mirror}
-  report-mirror: {cmds: []}   # the mirror's rows; a mirror replaces it
+  report-mirror: {cmds: []}   # the rows of the mirror. A mirror can replace this verb.

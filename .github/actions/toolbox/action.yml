@@ -9,8 +9,9 @@ runs:
   steps:
     - shell: bash
       env:
-        # GitHub checks the action's repository out beside the workflow, so the repository
-        # root, with the lock and the reader in docker/, is three levels up from this file.
+        # GitHub makes a checkout of the repository of the action adjacent to the workflow.
+        # Thus, the root of that repository, with the lock and docker/lock.py, is three
+        # levels above this file.
         LIB: ${{ github.action_path }}/../../..
         OP: ${{ inputs.op }}
       run: |
