@@ -223,8 +223,9 @@ tasks:
     cmds:
       - {task: op, vars: {ARGS: task empty-trash-pipeline}}
 
+  # empty-trash starts this task in the image through task op. go-task does not start an
+  # internal task from the command line. Thus, this task is not internal.
   empty-trash-pipeline:
-    internal: true
     cmds:
       - {task: clock}
       - {task: session}
