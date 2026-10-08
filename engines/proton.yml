@@ -29,8 +29,9 @@ vars:
   SESSION: '{{.ROOT_DIR}}/.run/session'
   SESSION_KEY: .state/session.tar.age
   UPLOAD: '{{.ROOT_DIR}}/.run/upload.json'
-  # The CLI with its session as plain files under RUN/session: the image has no keyring.
-  PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file proton-drive
+  # The CLI keeps its session as plain files under RUN/session. The image sets the plain
+  # file store, because it has no keyring.
+  PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} proton-drive
 
 tasks:
   pipeline:
