@@ -13,6 +13,7 @@ vars:
   INDEX: '{{.HOST}}.directory.index.html'
   PAGE_FOOT: 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.'
   CANARY: pub/index.html
+  FRESH_KEY: timestamp
 includes:
   toolbox:
     taskfile: ../../toolbox.yml
@@ -124,7 +125,10 @@ tasks:
       # run-smoke: an hour whose only change is timestamp, whose one redrawn page is the root.
       # smoke reads timestamp back and sizes it against the listing, then the root page under
       # its INDEX key (a filesystem cannot hold the slashless key beside it). Over file:// the
-      # canary and the Content-Encoding check say they skipped.
+      # canary and the Content-Encoding check say they skipped. Last, fresh reads the clock
+      # in timestamp, the FRESH_KEY file. The first command below writes the current time
+      # into it, at the 11 bytes that the listing records.
+      - date -u +%s > {{.F}}/run-smoke/staging/timestamp
       - {task: smoke, vars: {RUN: '{{.F}}/run-smoke', STAGING: '{{.F}}/run-smoke/staging', URL: 'file://{{.F}}/run-smoke/staging'}}
       # A page index drew that is not in staging cannot pass.
       - '! task smoke-refuses 2>/dev/null'

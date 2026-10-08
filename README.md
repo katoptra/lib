@@ -288,7 +288,7 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `batches` | Work the first `MAX_BATCHES`, each `fetch`, `verify`, `publish`, `checkpoint`; touch `.run/chain` when batches remain |
 | `fetch` | rsync the batch's files into `staging/`, dereferencing symlinks; a path that vanished since the listing is skipped |
 | `verify` | Hook. With `TL_KEY` set: every signed file and every container in the batch against the tlpdb |
-| `publish` | `label` the batch, then `aws s3 cp --recursive` once per type, each type's files in a tree of their own, one PutObject per file, never a destination listing; `timestamp` last |
+| `publish` | `label` the batch, then `aws s3 cp --recursive` once per type, each type's files in a tree of their own, one PutObject per file, never a destination listing; the `FRESH_KEY` file last |
 | `label` | `.run/labels.txt`: every staged file's Content-Type, from its name and first KiB; see [Content types](#content-types) |
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
