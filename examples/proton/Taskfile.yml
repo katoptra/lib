@@ -1,9 +1,11 @@
-# A consumer of the toolbox and the proton engine, with the proton image. Inside this repo
-# the includes are paths; a mirror includes
-# https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml and
-# https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml. The pipeline is
-# the engine's; render.txt, every command of it, is the library's own check of the engine,
-# and `task run -- task offline` runs the verbs that need neither Proton nor a bucket.
+# A Taskfile that includes the toolbox and the proton engine, with the proton image. In
+# this repo, the includes are paths. A mirror includes these URLs:
+#   - https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
+#   - https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml
+#
+# The pipeline is the pipeline of the engine. render.txt holds each command of the
+# pipeline. render.txt is the check of the engine in this library.
+# `task run -- task offline` does the verbs that use no Proton and no bucket.
 version: '3'
 includes:
   toolbox:
@@ -43,8 +45,8 @@ tasks:
   offline:
     desc: The engine's verbs that need neither Proton nor a bucket, inside the image
     cmds:
-      # confirm: one file in one folder staged; a summary that accounts for both with no
-      # failure confirms, one naming a failure does not.
+      # confirm: one file in one folder in staging. confirm accepts a summary that gives the
+      # two, with no failure. confirm rejects a summary that shows a failure.
       - {task: stage}
       - cp {{.ROOT_DIR}}/fixtures/upload-ok.json {{.UPLOAD}}
       - {task: confirm}
@@ -52,11 +54,11 @@ tasks:
       - cp {{.ROOT_DIR}}/fixtures/upload-failed.json {{.UPLOAD}}
       - if task confirm >/dev/null 2>&1; then echo "confirm accepted a summary with a failure" >&2; exit 1; fi
       - grep -q '(not confirmed)' {{.RUN}}/confirm.txt
-      # empty-trash: the host verb starts empty-trash-pipeline by name in the image. A dry
-      # run proves that go-task accepts the name from the command line.
+      # empty-trash: the host verb starts empty-trash-pipeline with its name in the image. A
+      # dry run shows that go-task accepts that name from the command line.
       - task --dry empty-trash-pipeline >/dev/null 2>&1 || { echo "empty-trash-pipeline is internal" >&2; exit 1; }
-      # age: a throwaway identity round-trips a file through the engine's verb, and the
-      # identity file is gone afterwards.
+      # age: with the verb of the engine, a temporary identity encrypts a file and then
+      # decrypts it. After that, the identity file is not there.
       - MIRROR_AGE_IDENTITY="$(age-keygen 2>/dev/null)" task age-roundtrip
       - test ! -e {{.RUN}}/age.key
       - 'echo "offline: every check passed"'
