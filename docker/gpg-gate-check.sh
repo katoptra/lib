@@ -1,9 +1,11 @@
 #!/bin/sh
-# The gate that decides whether a downloaded AWS CLI zip is the one AWS signed: gpgv's
-# status lines must carry a GOODSIG and a VALIDSIG whose primary-key fingerprint is the
-# one the lock pins. Building the image proves the accepting path on every CI run. This
-# proves the rejecting paths, which nothing else would notice going wrong, and that the
-# program and fingerprint tested here are the ones the Dockerfile and the lock ship.
+# The gate that accepts a downloaded AWS CLI zip only if it is the zip with the signature
+# of AWS. The status lines of gpgv must contain a GOODSIG, and a VALIDSIG with the
+# primary-key fingerprint that the lock pins. The image build on each CI run is the test
+# of the path that accepts. This script is the test of the paths that reject, because no
+# other check can find an error in them. It also shows that the program and the
+# fingerprint here are the same as the program and the fingerprint in the Dockerfile and
+# the lock.
 set -eu
 cd "$(dirname "$0")"
 
@@ -17,7 +19,7 @@ grep -qF "$GATE" rsync.Dockerfile \
 grep -qF "$KEY" ../toolchain.lock.toml \
   || { echo "FAIL: toolchain.lock.toml does not pin $KEY"; fail=1; }
 
-# gpgv --status-fd 1 for a real AWS CLI installer signature.
+# The gpgv --status-fd 1 output for a signature that AWS made for the AWS CLI installer.
 good() {
   cat <<EOF
 [GNUPG:] NEWSIG
@@ -28,7 +30,9 @@ good() {
 EOF
 }
 
-case_() {  # description, expected exit, pinned fingerprint; status lines on stdin
+# case_ gets the description, the correct exit and the pinned fingerprint. It reads the
+# status lines from stdin.
+case_() {
   got=0
   awk -v k="$3" "$GATE" >/dev/null || got=$?
   if [ "$got" -eq "$2" ]; then

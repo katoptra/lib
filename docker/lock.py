@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""lock KEY [FILE]: one value of toolchain.lock.toml, KEY dotted (task.linux_arm64.sha256).
+"""lock KEY [FILE]: one value of toolchain.lock.toml. KEY is dotted (task.linux_arm64.sha256).
 
-The one reader the Dockerfiles and the toolbox action share; FILE defaults to where the
-images keep the lock.
+The Dockerfiles and the toolbox action use this one script to read the lock. The default
+FILE is the path where the images keep the lock.
 """
 
 import functools
