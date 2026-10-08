@@ -1,9 +1,10 @@
-# One lock for the family. Each Dockerfile and the toolbox action read the tables they
-# need. Bumping a tool means bumping its version and every checksum beneath it.
+# One lock for all the images and the toolbox action. Each Dockerfile and the toolbox
+# action read the tables that they use. To change a tool, change its version and each
+# checksum below it.
 
 [ubuntu]
 image = "ubuntu:24.04"
-# pinned 2026-08-26: `container image pull ubuntu:24.04`, then the first digest
+# pinned on 2026-08-26: `container image pull ubuntu:24.04`, then the first digest that
 # `container image inspect ubuntu:24.04` prints.
 digest = "sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517"
 
@@ -58,12 +59,14 @@ archive = "op_linux_arm64_v2.39.0.zip"
 sha256 = "829baeff1c07e055cfa132031b1d9f2282ccdf5076258e482caf2fda70aea5d0"
 
 [awscli]
-# AWS publishes no checksum for the installer, only a detached PGP signature beside each
-# artifact. The fetch stage verifies that signature against docker/aws-cli.pub and requires
-# the signing key to be this fingerprint, so a substituted zip fails the build.
-# That key expires 2027-07-01, and an expired one is EXPKEYSIG, not GOODSIG: refresh
-# docker/aws-cli.pub from the AWS CLI User Guide before then, and this fingerprint with it
-# if AWS has moved to a new key.
+# AWS publishes no checksum for the installer. It publishes only a detached PGP signature
+# adjacent to each artifact. The fetch stage examines that signature with
+# docker/aws-cli.pub, and the signature key must have this fingerprint. Thus, a replaced
+# zip stops the build.
+#
+# Caution: Get a new docker/aws-cli.pub from the AWS CLI User Guide before 2027-07-01. If
+# AWS uses a new key, also change this fingerprint. After 2027-07-01, the key is expired,
+# and gpgv gives EXPKEYSIG for an expired key, not GOODSIG.
 version = "2.36.24"
 url = "https://awscli.amazonaws.com/awscli-exe-linux-{arch}-{version}.zip"
 key_fingerprint = "FB5DB77FD5C118B80511ADA8A6310ACC4672475C"   # AWS CLI Team <aws-cli@amazon.com>
