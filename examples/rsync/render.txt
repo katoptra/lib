@@ -20,7 +20,7 @@ esac
 test "$last" = 0 && ago="none on record" || ago="$(( (now - last) / 3600 )) h ago"
 echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f /work/examples/rsync/.run/reconcile && echo reconciling || echo not this run)"
 
-task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/relabel.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt
+task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
   rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
@@ -255,31 +255,6 @@ task: [checkpoint] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [reconciled] cp /work/examples/rsync/.run/start.txt /work/examples/rsync/.run/reconciled
 task: [push] xz -T0 -c /work/examples/rsync/.run/reconciled > /work/examples/rsync/.run/reconciled.xz
 task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/reconciled.xz s3://example/.state/reconciled
-task: [relabel-plan] printf '%s\n' $'application/x-gzip .gz .tgz .taz .tz .svgz\napplication/x-bzip2 .bz2 .tbz2 .tbz\napplication/x-xz .xz .txz\napplication/x-compress .Z\napplication/zstd .zst .tzst\napplication/x-lzip .lz\napplication/x-lzma .lzma' > /work/examples/rsync/.run/compressed.txt
-task: [relabel-plan] awk -v OFS='\t' 'NR == FNR { for (i = 2; i <= NF; i++) e[$i] = $1; next } { for (s in e) if (length($1) > length(s) && substr($1, length($1) - length(s) + 1) == s) { print $1, e[s]; next } }' /work/examples/rsync/.run/compressed.txt FS='\t' /work/examples/rsync/.run/applied.txt > /work/examples/rsync/.run/relabel.txt
-task: [relabel-plan] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/applied.txt | awk 'NR == FNR { for (i = 2; i <= NF; i++) e[$i]; next } $0 != "" { k = substr($0, 1, length($0) - 1); for (s in e) if (length(k) > length(s) && substr(k, length(k) - length(s) + 1) == s) { gsub(/\[/, "[[]", k); gsub(/\*/, "[*]", k); gsub(/\?/, "[?]", k); print k; next } }' /work/examples/rsync/.run/compressed.txt - > /work/examples/rsync/.run/relabel-skip.txt
-task: [relabel] rc=0; (
-if test -s /work/examples/rsync/.run/relabel.txt; then
-  IFS="$(printf '\t')" read -r k t < /work/examples/rsync/.run/relabel.txt || exit 1
-  aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --only-show-errors --metadata-directive REPLACE --content-type "$t" "s3://example/$k" "s3://example/$k" || exit 1
-  u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
-function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
-    out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2)
-  got=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -r 0-0 -D - -o /dev/null "https://example.katoptra.org/$u" | awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); print $2 }')
-  test "$got" = "$t" || { echo "$k: served as ${got:-nothing} after the copy, not $t" >&2; exit 1; }
-  while read -r t endings; do
-    set -- --exclude '*'
-    for e in $endings; do set -- "$@" --include "*$e"; done
-    set -- "$@" --exclude '.state/*'
-    while IFS= read -r p; do set -- "$@" --exclude "$p"; done < /work/examples/rsync/.run/relabel-skip.txt
-    aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --only-show-errors --recursive --metadata-directive REPLACE --content-type "$t" "$@" s3://example/ s3://example/ || exit 1
-  done < /work/examples/rsync/.run/compressed.txt
-fi
-date -u +%Y-%m-%dT%H:%M:%SZ | aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --content-type text/plain - s3://example/.state/labels-v1
-) || rc=$?
-if test $rc -ne 0; then touch /work/examples/rsync/.run/relabel-failed; echo "::warning::relabel stopped (exit $rc): nothing marked, the next run tries again"; fi
-
 task: [pull] rc=0; aws s3 ls s3://example/.state/indexed.txt.xz > /dev/null || rc=$?
 case $rc in
   0) aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 s3://example/.state/indexed.txt.xz /work/examples/rsync/.run/indexed.txt.xz && xz -dc /work/examples/rsync/.run/indexed.txt.xz > /work/examples/rsync/.run/indexed.txt ;;

@@ -36,7 +36,7 @@ verified go-task or platform fact that cost a session to find.
   command substitution's exit: `x=$(cat missing)` stops the command (verified, 3.53.1).
 - Task's built-in shell keeps `set -e` inside a subshell whose status `||` reads:
   `( false; echo on ) || echo caught` prints only `caught` (verified, 3.53.1), where bash
-  and dash print `on`. `relabel` relies on neither and exits each step by hand.
+  and dash print `on`. A guard meant to hold under either exits each step by hand.
 - Task's built-in shell has no `umask`. A file that must be born 0600 is
   `install -m 600 /dev/null "$f"` and then written, as the proton engine's `age` does.
 - Every Proton CLI call goes through `pd`, which pushes the session back whatever the
@@ -70,7 +70,7 @@ each engine's own check. The rsync one runs over `examples/rsync/fixtures/`: the
 diff over `run-root` and `run-empty`, `retry`'s exit codes, `pages` over `run-pages`
 (whose `want/` is ctan's page set, matched byte for byte), `smoke`'s page read-back over
 `run-smoke`, and `prepare` and `verify` over `tree/`, a signed subtree whose tlpdb is signed by a throwaway key pinned in the
-example. `label`, `label-trees`, `relabel-plan` and `fresh` run over files the check
+example. `label`, `label-trees` and `fresh` run over files the check
 writes itself, because their names and first bytes are the point: a change to the
 image's `mime.types` that moves a label fails there, before anything uploads. Regenerate the tree with a new key only to change its shape; the private half
 was never kept. The proton one runs `confirm` over `examples/proton/fixtures/`, an

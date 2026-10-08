@@ -159,16 +159,6 @@ tasks:
       - test "$(cd {{.F}}/run-label/staging && find . -type f)" = ./timestamp && test "$(ls {{.F}}/run-label/up/*.type | wc -l)" -eq 11
       - {task: label-trees, vars: {TO: staging, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
       - diff -r {{.F}}/run-label/before {{.F}}/run-label/staging && test ! -e {{.F}}/run-label/up
-      # relabel-plan over a state that holds a directory named like a tarball (gnu's librejs
-      # has two) and one whose name carries glob characters: only files ending in a
-      # COMPRESSED suffix are matches, .z is not .Z, and both directories' slashless page
-      # keys are spared, the second as a glob that matches it alone.
-      - |
-        mkdir -p {{.F}}/run-relabel
-        printf '%s\t1\t-\n' 'a b.diff.gz' 'lib/x.tar.gz/inner.xpi' 'p[1]*?.tar.gz/f' plain.txt u.Z v.z > {{.F}}/run-relabel/applied.txt
-      - {task: relabel-plan, vars: {RUN: '{{.F}}/run-relabel'}}
-      - printf '%s\t%s\n' 'a b.diff.gz' application/x-gzip u.Z application/x-compress | diff - {{.F}}/run-relabel/relabel.txt
-      - printf '%s\n' lib/x.tar.gz 'p[[]1][*][?].tar.gz' | diff - {{.F}}/run-relabel/relabel-skip.txt
       # fresh over three clocks served off a filesystem: Unix time an hour old and CTAN's
       # dated form two hours old pass; Unix time two days old, Savannah's layout, fails.
       - |

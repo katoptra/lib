@@ -263,7 +263,7 @@ flowchart LR
     direction LR
     fetch --> verify --> publish --> checkpoint
   end
-  batches --> b --> delete --> reconcile["reconcile<br/>when due"] --> relabel["relabel<br/>once a bucket"] --> index --> smoke --> report --> ping
+  batches --> b --> delete --> reconcile["reconcile<br/>when due"] --> index --> smoke --> report --> ping
   smoke --> fr["fresh"]
   smoke --> sm["smoke-mirror"]
   report --> re["report-engine"] --> rm["report-mirror"]
@@ -291,7 +291,6 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `checkpoint` | `merge` what landed into the state and push it as one PutObject; empty staging |
 | `delete` | Remove the keys upstream dropped, 1,000 per call, once every batch has landed, and drop them from the state |
 | `reconcile` | When `due` left `.run/reconcile`: rebuild the state, delete what neither upstream, `OWN` nor the state's own directories own, then `reconciled` |
-| `relabel` | Once a bucket: every compressed object gets its type by a server-side copy onto itself, then `.state/labels-v1`; a refusal warns and the next run tries again |
 | `index` | Hook. With `INDEX` set: `pages`, then both key sets uploaded, the keys of emptied directories removed, and `.state/indexed.txt.xz` moved forward. A mirror with a landing page of its own replaces it |
 | `pages` | A page for every directory the run touched, drawn from the state into staging, with a tree per depth for the slashless keys |
 | `smoke` | A key of every type the run published, read back through `HOST`: size against the listing, Content-Type against the label; the tlpdb sha512 when `TL` is set; with `INDEX`, one redrawn page under both keys; with `CANARY`, that file as `libwww-perl` against the bucket's copy; no `Content-Encoding` on the first non-empty `.tar.gz`; a warning for every path upstream lists and rsync never sends; then `fresh` and `smoke-mirror` |
@@ -300,7 +299,7 @@ until `INDEX` is set, and `smoke-mirror` until a mirror fills it.
 | `report-engine` | Hook. The engine's rows of the run summary |
 | `retry` | Run a command, retrying rsync's transport exit codes with backoff; 23 (an unreadable path, skipped) and 24 (a file vanished mid-transfer) are successes |
 
-`normalise`, `pull`, `push`, `batch`, `label-trees`, `merge`, `remove` and `relabel-plan` are the verbs those call;
+`normalise`, `pull`, `push`, `batch`, `label-trees`, `merge` and `remove` are the verbs those call;
 `pull` and `push` move an xz-compressed key between the bucket and `.run`, and a
 mirror's own verb may call them.
 
@@ -407,15 +406,8 @@ the CLI guesses none:
 A stray control byte is not a NUL, so an old `.sty` ending in `^Z` stays `text/x-tex`. Three
 checks hold it: `offline` labels a set of names and bytes and fails on any change, which is
 where an image bump that moves `mime.types` shows; `smoke` reads one key of every type
-back through the domain and compares the served type with the label; and the existing
+back through the domain and compares the served type with the label; and the
 `.tar.gz` check keeps `Content-Encoding` off tarballs.
-
-`relabel` gives the objects already in a bucket the compressed types, once: one copy
-read back through the domain first, so a store that refuses costs one request, then one
-`aws s3 cp --recursive --metadata-directive REPLACE` per `COMPRESSED` line, a server-side
-copy of each match onto itself, and `.state/labels-v1` last. A directory named like a
-tarball keeps its page. It fails soft: a warning on the run, no mark, and the next run tries
-again. It is a migration, and leaves the engine once every bucket holds the mark.
 
 #### The vars
 
@@ -617,7 +609,6 @@ Every mirror has one S3-compatible bucket. What it holds depends on the engine.
 | rsync | every upstream path, at the root | The mirror. A public domain serves the bucket |
 | rsync | `.state/applied.txt.xz` | The state: what the bucket holds, at upstream's size and mtime |
 | rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | What the directory pages last showed, and the pages under both keys |
-| rsync | `.state/labels-v1` | `relabel`'s mark: every compressed object carries its type |
 | rsync, a mirror's own | `index.html` | tlnet's landing page, spared by `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. The only key |
 | a pipeline of its own | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | dropbox's state and its dated copies; a lifecycle rule expires the history |
@@ -1029,7 +1020,7 @@ inside the image and diffs it against `render.txt`. `task run -- task offline` r
 engine's verbs that need no bucket over `fixtures/`: for rsync, the list diff, `retry`,
 `due`, `prepare` and `verify` over a signed subtree whose throwaway key is pinned in the
 example, `pages` against ctan's page set byte for byte, `smoke`'s page read-back, `label`
-over a set of names and bytes, `label-trees` there and back, `relabel-plan`, and `fresh`
+over a set of names and bytes, `label-trees` there and back, and `fresh`
 passing and failing; for proton, `confirm` over an accepting and a refusing upload summary, and an
 `age` round trip. CI runs the same four steps per variant on every pull request, plus
 the two guards' own cases.
