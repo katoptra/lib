@@ -76,8 +76,9 @@ task: [confirm] files=$(find /work/examples/proton/staging -type f | wc -l); fol
 python3 - "$files" "$folders" /work/examples/proton/.run/upload.json /work/examples/proton/.run/confirm.txt <<'PY'
 import json, sys
 files, folders = int(sys.argv[1]), int(sys.argv[2])
-# The CLI writes progress and its summary as one JSON object per line; the last
-# line carrying transferredItems is the summary.
+# While the upload continues, the CLI writes one JSON object on each line. Its
+# summary is also one JSON object on a line. The last line with transferredItems
+# is the summary.
 summary = None
 for line in open(sys.argv[3]):
     try:

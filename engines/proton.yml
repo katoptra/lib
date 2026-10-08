@@ -1,43 +1,59 @@
-# The proton engine: how bytes move from a staging tree into one Proton Drive folder, for
-# every mirror that includes this file flattened beside the toolbox. A run restores the
-# Proton CLI session from the bucket, checks that the destination is the folder the vault
-# names, lets the mirror fill the staging tree, uploads it in one CLI call (the CLI skips a
-# file whose content Proton already holds and makes a new revision of one that changed),
-# confirms the upload from the CLI's own summary, lets the mirror prune what its upstream
-# dropped, and reports. Proton's version history is the cloud-side history, so the bucket
-# holds nothing of the mirror's but the session.
+# The proton engine: how bytes move from a staging tree into one Proton Drive folder. It
+# is for each mirror that includes this file and the toolbox with `flatten: true`. A run
+# does these steps:
+#   1. It gets the session of the Proton CLI from the bucket.
+#   2. It makes sure that the destination is the folder that the vault identifies.
+#   3. It lets the mirror fill the staging tree.
+#   4. It uploads the tree in one CLI command. The CLI does not send a file when Proton
+#      has its content, and it makes a new revision of a file that changed.
+#   5. confirm examines the summary of the CLI for the upload.
+#   6. It lets the mirror prune the files that its upstream removed.
+#   7. It reports.
+# Proton keeps the version history. Thus, the bucket holds only the session of the mirror.
 #
-# Read from the environment, by the names every Proton mirror's vault uses:
-# MIRROR_PROTON_DESTINATION (the CLI path of the destination folder, /my-files/GitHub
-# say), MIRROR_PROTON_DESTINATION_UID (its UID, compared on every run before a write),
-# MIRROR_R2_BUCKET, MIRROR_AGE_IDENTITY, and the three AWS_* names boto3 reads, with
-# AWS_ENDPOINT_URL_S3 for the endpoint. Each is a line of op.env, so it crosses into the
-# container by name.
+# The engine reads these names from the environment. Each Proton mirror uses these names
+# in its op.env:
+#   - MIRROR_PROTON_DESTINATION: the CLI path of the destination folder, for example
+#     /my-files/GitHub.
+#   - MIRROR_PROTON_DESTINATION_UID: the UID of that folder. Each run compares it before
+#     it writes to Proton.
+#   - MIRROR_R2_BUCKET
+#   - MIRROR_AGE_IDENTITY
+#   - the three AWS_* names that boto3 reads, with AWS_ENDPOINT_URL_S3 for the endpoint.
+# Each name is a line of op.env. Thus, it goes into the container with its name.
 #
-# Hooks: stage fills STAGING and every mirror defines it; prune trashes what upstream no
-# longer has, and a mirror that wants that defines it. A mirror lists each it defines under
-# excludes: on this include. pipeline and plan-pipeline are the vocabulary in order.
+# Hooks:
+#   - stage fills STAGING. Each mirror writes this verb.
+#   - prune moves the files that upstream removed to the Proton trash. A mirror that wants
+#     this writes the verb.
+#   - report-engine gives the rows of the engine in the run summary.
+# A mirror puts each hook that it writes in `excludes:` on this include. pipeline and
+# plan-pipeline put the verbs in sequence. For a different sequence, a mirror puts these
+# two in `excludes:` and writes them again.
 #
-# Rules this file keeps, as the toolbox does: no vars: default for anything a mirror
-# owns, and the CLI session is written back to the bucket after every CLI call, whatever
-# the exit, because its refresh token rotates and a run that kept a rotated token to
-# itself leaves the next run unable to log in.
+# Rules that this file and the toolbox obey:
+#   - No `vars:` default for a value that a mirror sets.
+#   - After each CLI command, for all exit codes, the engine examines the CLI session.
+#     When the refresh token changed, the engine writes the session back to the bucket.
+#     The CLI can change the refresh token. If a run keeps a changed token and does not
+#     write it back, the next run cannot log in.
 version: '3'
 
 vars:
-  # The engine names its image. The IMAGE on the toolbox include, for example the -dev
-  # image of a lib example, must win. So this value is a default: a literal value here
-  # beats the include.
+  # The engine sets its image. The IMAGE on the toolbox include must be the image that the
+  # run uses, for example the -dev image of a lib example. Thus, this value is a default.
+  # A literal value here can replace the IMAGE of the include, because go-task merges
+  # sibling includes in a random sequence for each run.
   IMAGE: '{{.IMAGE | default "ghcr.io/katoptra/toolbox:proton-v2"}}'
-  # SESSION and UPLOAD spell out ROOT_DIR/.run and do not read RUN, the toolbox's var.
-  # For a root task, go-task evaluates the vars of sibling includes in an order that
-  # changes from run to run (verified, 3.53.1 and 3.54.0). So RUN can be unset when it
-  # evaluates these two.
+  # SESSION and UPLOAD write ROOT_DIR/.run in full, and they do not read RUN, the var of
+  # the toolbox. For a root task, go-task calculates the vars of sibling includes in a
+  # sequence that changes from run to run (examined on 3.53.1 and 3.54.0). Thus, RUN can
+  # be unset when go-task calculates these two.
   SESSION: '{{.ROOT_DIR}}/.run/session'
   SESSION_KEY: .state/session.tar.age
   UPLOAD: '{{.ROOT_DIR}}/.run/upload.json'
-  # The CLI keeps its session as plain files under RUN/session. The image sets the plain
-  # file store, because it has no keyring.
+  # The CLI keeps its session as files in RUN/session. The image sets the file store
+  # (`unsafe_file`), because the image has no keyring.
   PD: PROTON_DRIVE_CACHE_DIR={{.SESSION}} proton-drive
 
 tasks:
@@ -71,7 +87,8 @@ tasks:
       - rm -rf {{.SESSION}} && mkdir -p {{.SESSION}} && chmod 700 {{.SESSION}}
       - {task: pull, vars: {KEY: '{{.SESSION_KEY}}', OUT: '{{.RUN}}/session.tar.age', MISSING: 'echo "no Proton session at {{.SESSION_KEY}}: log in on a laptop and run task session-seal" >&2; exit 1'}}
       - {task: age, vars: {MODE: decrypt, IN: '{{.RUN}}/session.tar.age', OUT: '{{.RUN}}/session.tar'}}
-      # The two members the CLI needs, and nothing else the archive might hold.
+      # tar gets only the two members that the CLI uses from the archive. Other files that
+      # the archive can hold stay in it.
       - tar -xf {{.RUN}}/session.tar -C {{.SESSION}} auth-session.json clientUid.json && chmod 600 {{.SESSION}}/*.json
       - rm -f {{.RUN}}/session.tar {{.RUN}}/session.tar.age
       - sha256sum {{.SESSION}}/auth-session.json > {{.RUN}}/session.sha
@@ -133,9 +150,15 @@ tasks:
       - s3 put {{.FILE}} {{.KEY}}
 
   # ---- the CLI ----
-  # Every CLI call goes through here: stderr to RUN/pd.err rather than the public log,
-  # the session pushed back whatever the exit, then the exit judged against OK, the codes
-  # accepted besides 0.
+  # This verb does each CLI command:
+  #   1. The stderr of the command goes to RUN/pd.err, not to the run log, which all
+  #      persons can read.
+  #   2. session-push operates, for all exit codes. It writes the session back when the
+  #      refresh token changed.
+  #   3. The verb compares the exit with OK: the exit codes, other than 0, that it
+  #      accepts.
+  # Only list-folder is different: its ARGS end with `|| echo "[]" > OUT`. Thus, the `2>`
+  # is on the echo, and the stderr of the CLI goes to the run log.
   pd:
     desc: One CLI call, ARGS, with the session written back afterwards
     internal: true
@@ -153,8 +176,9 @@ tasks:
     cmds:
       - defer: rm -f {{.RUN}}/parent.json
       - {task: pd, vars: {ARGS: 'filesystem list -j "$(dirname "$MIRROR_PROTON_DESTINATION")" > {{.RUN}}/parent.json'}}
-      # ponytail: the folder is found by basename, so a destination whose own name holds a
-      # slash is unsupported; the CLI escapes one with a backslash and dirname does not.
+      # ponytail: the command finds the folder with its basename. Thus, the engine cannot
+      # use a destination with a slash in its name. The CLI puts a backslash before such a
+      # slash, and dirname does not.
       - |
         python3 - "$(basename "$MIRROR_PROTON_DESTINATION")" "$MIRROR_PROTON_DESTINATION_UID" {{.RUN}}/parent.json <<'PY'
         import json, sys
@@ -173,7 +197,7 @@ tasks:
     desc: STAGING into the destination in one CLI call; identical files are skipped, changed ones become new revisions; the CLI's summary goes to RUN/upload.json
     cmds:
       - 'test -n "$(ls -A {{.STAGING}} 2>/dev/null)" || { echo "upload: staging is empty; stage put nothing there" >&2; exit 1; }'
-      # Exit 1 is the CLI refusing some items and handling the rest; confirm reads the summary.
+      # Exit 1: the CLI rejected some items and did the others. confirm reads the summary.
       - {task: pd, vars: {ARGS: 'filesystem upload -f create-new-revision -d merge -t --json {{.STAGING}}/* "$MIRROR_PROTON_DESTINATION" > {{.UPLOAD}}', OK: '0 1'}}
 
   confirm:
@@ -184,8 +208,9 @@ tasks:
         python3 - "$files" "$folders" {{.UPLOAD}} {{.RUN}}/confirm.txt <<'PY'
         import json, sys
         files, folders = int(sys.argv[1]), int(sys.argv[2])
-        # The CLI writes progress and its summary as one JSON object per line; the last
-        # line carrying transferredItems is the summary.
+        # While the upload continues, the CLI writes one JSON object on each line. Its
+        # summary is also one JSON object on a line. The last line with transferredItems
+        # is the summary.
         summary = None
         for line in open(sys.argv[3]):
             try:
@@ -223,7 +248,7 @@ tasks:
     cmds:
       - {task: op, vars: {ARGS: task empty-trash-pipeline}}
 
-  # empty-trash starts this task in the image through task op. go-task does not start an
+  # empty-trash uses `task op` to start this task in the image. go-task does not start an
   # internal task from the command line. Thus, this task is not internal.
   empty-trash-pipeline:
     cmds:
@@ -232,8 +257,8 @@ tasks:
       - {task: pd, vars: {ARGS: filesystem empty-trash}}
 
   # ---- hooks ----
-  stage: {cmds: []}   # the mirror's: fill STAGING with what Proton should hold
-  prune: {cmds: []}   # the mirror's: trash what its upstream no longer has
+  stage: {cmds: []}   # the mirror fills STAGING with the files that Proton must hold
+  prune: {cmds: []}   # the mirror moves the files that its upstream removed to the trash
 
   report-engine:
     desc: The engine's rows of the run summary, appended after the toolbox's
