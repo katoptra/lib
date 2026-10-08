@@ -84,7 +84,7 @@ flowchart TB
 |---|---|---|---|
 | Toolbox | `toolbox.yml` | How a run starts, is contained, resolves secrets, is rendered, checked and reported | Never; it is included as is |
 | Engine | `engines/<transport>.yml` | How bytes move for one transport, and the pipeline's order | It lists a hook under `excludes:` and defines its own |
-| Image | `docker/`, `toolchain.lock.toml` | Every tool a run needs, pinned by checksum | Never; it names one in `IMAGE` |
+| Image | `docker/`, `toolchain.lock.toml` | Every tool a run needs, pinned by checksum | Never; its engine names one, or it names one in `IMAGE` |
 | Workflows | `.github/workflows`, `.github/actions/toolbox` | How Actions installs the tools and runs `task sync` and `task check` | Never; its callers are a few lines each |
 | Mirror | The mirror's own repository | Identity, the hooks, the exceptions | Always; this is all it holds |
 
@@ -189,7 +189,7 @@ keeps its own.
 | `due` | Decide whether this run reconciles, by the age of the last reconcile at `.state/reconciled`; leave `.run/reconcile` when it does. `due-rule` is the rule alone |
 | `reconciled` | Record this run's start at `.state/reconciled`; an engine runs it once a reconcile completes |
 | `report` | Append the run summary to the Actions job page (stdout elsewhere): its own rows, then `report-engine`'s, then `report-mirror`'s |
-| `report-engine`, `report-mirror` | Hooks: no-ops here; the engine's and the mirror's rows |
+| `report-mirror` | Hook: a no-op here; the mirror's rows |
 | `ping` | GET `HEALTHCHECK_URL`; skipped when unset |
 | `ping-fail` | GET `HEALTHCHECK_URL/fail`; skipped when unset |
 | `failed` | The failure path: `report STATUS=failed`, then `ping-fail` |
@@ -225,8 +225,10 @@ reconciles defines `pull` and `push` itself.
 
 | Name | Kind | Meaning |
 |---|---|---|
-| `NAME`, `DESC`, `IMAGE` | include vars, required | The menu's title and line, and the image the run happens inside |
+| `NAME`, `DESC` | include vars, required | The menu's title and line |
+| `IMAGE` | include var, required unless the engine names it | The image the run happens inside. The include's value wins over the engine's |
 | `pipeline`, `plan-pipeline` | tasks, required | The full run and its read-only half, inside the image. An engine supplies both; a mirror with no engine defines them |
+| `report-engine` | task, required | The engine's rows of the run summary, which `report` calls. An engine supplies it; a mirror with no engine defines it, with no commands when it has no rows |
 | `op.env` | file | `op://` references, one per secret. Absent means the environment is already resolved: on a laptop, whatever is exported; in Actions, the repository's secrets, crossing by the names in `PASS` |
 | `PASS` | include var | Host environment names that cross into the container beside the ones in `op.env`. Task vars are not environment: they go after `--` |
 | `MENU` | include var | Extra lines for the menu, one per mirror-specific verb |
@@ -706,7 +708,7 @@ flowchart LR
   rel --> tag["the git tag vX, moved"]
   tag --> gr["the GitHub release vX.Y.Z"]
   tag --> inc["mirrors include toolbox.yml and an engine at v2"]
-  ghcr --> img["mirrors name IMAGE at -v2"]
+  ghcr --> img["engines, and mirrors with no engine, name IMAGE at -v2"]
 ```
 
 Two pins, one policy. The include and the image float at `v2`, on purpose: moving that
@@ -793,7 +795,6 @@ includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
-    excludes: [report-engine]
     vars:
       NAME: ctan
       DESC: an hourly mirror of CTAN at https://ctan.katoptra.org/
@@ -811,8 +812,8 @@ AWS_ENDPOINT_URL=op://<vault-uuid>/ctan/r2/endpoint
 HEALTHCHECK_URL=op://<vault-uuid>/ctan/healthcheck/url
 ```
 
-That is a whole mirror: the engine supplies `pipeline` and `plan-pipeline`, and
-`report-engine` is excluded on the toolbox include because the engine defines it too.
+That is a whole mirror. The engine supplies `pipeline`, `plan-pipeline` and
+`report-engine`.
 
 A mirror of one signed subtree, shaped like tlnet, adds `TL`, `TL_KEY`, `CEILING_GB`,
 `OWN` and a `FILTER` to the root vars, excludes `index` on the engine include, and
@@ -832,7 +833,7 @@ includes:
   toolbox:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
     flatten: true
-    excludes: [report-engine, report-mirror]
+    excludes: [report-mirror]
     vars: {NAME: github, DESC: a nightly mirror of every repository under OWNERS into Proton Drive, IMAGE: ghcr.io/katoptra/toolbox:proton-v2}
   proton:
     taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml
@@ -862,6 +863,7 @@ tasks:
     cmds: [{task: clock}, {task: session}, {task: state}, '# the mirror's own steps', {task: report}, {task: ping}]
   plan-pipeline:
     cmds: [{task: clock}, {task: session}, {task: state}, '# the read-only steps']
+  report-engine: {cmds: []}   # no engine, so no engine rows
   report-mirror: {cmds: ['# cat the mirror's own report onto the job page']}
 ```
 
@@ -957,8 +959,6 @@ The rules that keep this honest:
 - The replacement reads the mirror's root vars, the same as the original did.
 - Override engine verbs and the in-container toolbox verbs. Do not override the host
   side: `sync`, `plan`, `check` and `run` are what the workflows and the menu promise.
-- `report-engine` is defined in the toolbox as a no-op and in every engine, so an engine
-  consumer's toolbox include excludes it.
 
 ### Adding a hook or a verb, in an engine
 

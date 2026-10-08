@@ -1,9 +1,10 @@
 # The toolbox: every verb a katoptra mirror has whatever moves its bytes. A mirror
-# includes this file flattened, passes NAME, DESC and IMAGE on the include, keeps its
-# identity in its own root vars, and has two verbs, pipeline and plan-pipeline, both of
-# which run inside IMAGE: an engine include supplies them, and a mirror with no engine
-# defines them. A verb listed under the include's excludes: and defined in the mirror
-# replaces the one here.
+# includes this file flattened and passes NAME and DESC on the include. It passes IMAGE
+# there too, unless the engine names the image. The mirror keeps its identity in its own
+# root vars. Three verbs come from outside this file and run inside IMAGE: pipeline,
+# plan-pipeline and report-engine. An engine include supplies them, and a mirror with no
+# engine defines them. A verb listed under the include's excludes: and defined in the
+# mirror replaces the one here.
 #
 # Rules this file keeps: no vars: default for anything a mirror owns (it would shadow
 # the mirror's value; defaults go inline), and host-side and in-container verbs share
@@ -13,13 +14,12 @@
 # label, label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages, fresh,
 # and the hooks prepare, verify, index, smoke and smoke-mirror. The proton engine's: session, session-push, seal,
 # session-seal, age, pull, push, pd, destination, upload, confirm, list-folder, trash,
-# empty-trash, empty-trash-pipeline, and the hooks stage and prune. report-engine lives
-# here as a no-op and in every engine, so an engine consumer's toolbox include lists it
-# under excludes:.
+# empty-trash, empty-trash-pipeline, and the hooks stage and prune.
 version: '3'
 
 vars:
   RUN: '{{.ROOT_DIR}}/.run'
+  STAGING: '{{.ROOT_DIR}}/staging'
   # The container runtime, not the sync engine: Apple container when its daemon is up,
   # else Docker. ENGINE=docker forces Docker.
   ENGINE:
@@ -126,7 +126,7 @@ tasks:
   clean:
     desc: Delete .run, the engine's staging tree and the Taskfile cache; nothing else, so a fixture kept in .git/info/exclude survives
     cmds:
-      - rm -rf {{.RUN}} {{.ROOT_DIR}}/staging {{.ROOT_DIR}}/.task
+      - rm -rf {{.RUN}} {{.STAGING}} {{.ROOT_DIR}}/.task
 
   # ---- pipeline ----
   # The words after -- are task vars for the pipeline inside the image: task sync --
@@ -265,5 +265,4 @@ tasks:
         EOF
       - {task: report-engine}
       - {task: report-mirror}
-  report-engine: {cmds: []}   # the engine's rows; an engine include replaces it
   report-mirror: {cmds: []}   # the mirror's rows; a mirror replaces it

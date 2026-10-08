@@ -9,7 +9,6 @@ includes:
   toolbox:
     taskfile: ../../toolbox.yml
     flatten: true
-    excludes: [report-engine]   # the engine's
     vars:
       NAME: example-proton
       DESC: the proton toolbox and engine, exercised

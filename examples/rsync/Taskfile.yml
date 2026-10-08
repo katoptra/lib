@@ -17,7 +17,6 @@ includes:
   toolbox:
     taskfile: ../../toolbox.yml
     flatten: true
-    excludes: [report-engine]   # the engine's
     vars:
       NAME: example-rsync
       DESC: the rsync toolbox and engine, exercised
