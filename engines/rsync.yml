@@ -1,58 +1,93 @@
-# The rsync engine: how bytes move from an rsync upstream to an S3 bucket (R2), for every
-# mirror that includes this file flattened beside the toolbox. A run is a list diff, never
-# a local tree: list upstream, diff it against the state file the last run left in the
-# bucket, fetch the delta in batches of BATCH_GB, upload, checkpoint the state once per
-# batch, delete what left upstream, and reconcile the bucket against the state when the
-# toolbox's due says one is due (RECONCILE and RECONCILE_HOURS are its vars). The mirror
-# orders these verbs in its pipeline and holds its identity in root vars.
+# The rsync engine: how bytes move from an rsync upstream to an S3 bucket (R2). It is for
+# each mirror that includes this file and the toolbox with `flatten: true`. A run is a
+# list diff, not a local tree. A run does these steps:
+#   1. It gets a listing of upstream.
+#   2. It compares that listing with the state file that the last run put in the bucket.
+#   3. It downloads the delta in batches of BATCH_GB.
+#   4. It uploads each batch.
+#   5. It writes the state to the bucket one time for each batch (a checkpoint).
+#   6. It removes the keys that are in the state and not upstream.
+#   7. It reconciles the bucket with the state when the due verb of the toolbox finds that
+#      a reconcile is due. RECONCILE and RECONCILE_HOURS are the vars of due.
+# The mirror puts these verbs in sequence in its pipeline. Its root vars identify it.
 #
-# Read from the mirror: SOURCE, BUCKET, HOST (required); and, each with an inline default,
-# CEILING_GB (0: no ceiling), BATCH_GB (4), MAX_BATCHES (4), LIST_FLOOR (0: no
-# truncated-listing guard), RETRY_BASE (15 s), TL and TL_KEY (a signed TeX Live subtree
-# and the fingerprint that signs it; empty: no signature checks), FILTER (rsync filter
-# arguments for the listing; empty: the whole tree), OWN (bucket-root keys the mirror owns
-# and reconcile never deletes, space separated; empty: none), INDEX (the directory-page
-# key suffix; set, index draws a page for every directory), PAGE_FOOT (the HTML every page
-# closes on, %s the directory's encoded path; empty: none), CANARY (a file whose bytes the
-# zone's HTML rewriters would alter; set, smoke reads it through the domain as a Perl
-# client), FRESH_KEY and FRESH_HOURS (a file in which upstream records its own clock, and
-# the age past which smoke fails the run; empty: no freshness check).
+# The vars that the engine reads from the mirror:
+#   - SOURCE, BUCKET and HOST. These vars are necessary.
+#   - These vars have an inline default:
+#     - CEILING_GB. A value of 0 (or no value) gives no ceiling.
+#     - BATCH_GB: 4.
+#     - MAX_BATCHES: 4.
+#     - LIST_FLOOR. A value of 0 (or no value) gives no guard for a truncated listing. A
+#       listing must have more than LIST_FLOOR lines. If not, the run stops.
+#     - RETRY_BASE: 15 s.
+#     - TL and TL_KEY: a signed TeX Live subtree, and the fingerprint of the key that
+#       gives its signature. An empty value gives no signature checks.
+#     - FILTER: the rsync filter arguments for the listing. An empty value gives the full
+#       tree.
+#     - OWN: the keys at the bucket root that the mirror supplies, not upstream. reconcile
+#       does not remove them. Put a space between each two keys. An empty value gives
+#       none.
+#     - INDEX: the key suffix of the directory pages. When INDEX is set, index makes a
+#       page for each directory.
+#     - PAGE_FOOT: the HTML at the end of each page, with %s for the encoded path of the
+#       directory. An empty value gives none.
+#     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
+#       CANARY is set, smoke reads the file through the domain as a Perl client.
+#     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
+#       check of that clock.
+#     - FRESH_HOURS: 24. When the clock in FRESH_KEY is more than FRESH_HOURS before the
+#       time of the check, smoke stops the run with a failure.
 #
-# Every object's Content-Type is decided here, by label, never guessed by the AWS CLI:
-# the CLI keeps the first half of Python's guess, which serves foo.diff.gz as a diff, and
-# its guesses move with the image.
+# The label verb here selects the Content-Type of each object. The AWS CLI does not select
+# it, for two causes:
+#   - The CLI keeps the first value of the result of guess_type in Python. Thus, the CLI
+#     sends foo.diff.gz as a diff.
+#   - The results of the CLI change with the image.
 #
-# Hooks: prepare, verify, index, smoke, smoke-mirror and report-engine are the verbs a
-# mirror may replace, by listing each under excludes: on this include and defining its
-# own. prepare and verify do nothing until TL_KEY is set, index until INDEX is set;
-# smoke-mirror does nothing here. pipeline and plan-pipeline are the vocabulary in order;
-# a mirror that needs another order excludes and redefines them.
+# Hooks: prepare, verify, index, smoke-mirror and report-engine are the verbs that a
+# mirror can replace. To replace one, a mirror puts it in `excludes:` on this include and
+# writes a verb with that name. prepare and verify do nothing until TL_KEY is set. index
+# does nothing until INDEX is set. smoke-mirror does nothing here.
 #
-# Rules this file keeps, as the toolbox does: no vars: default for anything a mirror
-# owns, because a value here shadows the mirror's root value, and every tunable is an
-# inline {{.X | default N}}, because a mirror's root value in turn shadows a KEY=value
-# given on the command line inside the image (task sync -- MAX_BATCHES=8 reaches these
-# verbs only while no vars: block names MAX_BATCHES). A var of another name that reads
-# the tunable still sees the command line, so each default is spelled once, below. The
-# rest of the vars derive from the mirror's or are the engine's own helpers.
+# pipeline and plan-pipeline put the verbs in sequence. For a different sequence, a mirror
+# puts these two in `excludes:` and writes them again.
+#
+# Rules that this file and the toolbox obey:
+#   - No `vars:` default for a value that a mirror sets. With a default here, task does
+#     not use the root value of the mirror.
+#   - Each tunable is an inline {{.X | default N}}. With a root value in the mirror, task
+#     does not use a KEY=value from the command line in the image. Thus,
+#     `task sync -- MAX_BATCHES=8` goes to these verbs only while no `vars:` block sets
+#     MAX_BATCHES.
+#   - A var with a different name that reads the tunable continues to see the command
+#     line. Thus, each default is in one location only, in the vars and verbs that follow.
+# The other vars get their values from the vars of the mirror, or they are helper vars of
+# the engine.
 version: '3'
 
 vars:
-  # The engine names its image. The IMAGE on the toolbox include, for example the -dev
-  # image of a lib example, must win. So this value is a default: a literal value here
-  # beats the include.
+  # The engine sets its image. The IMAGE on the toolbox include must be the image that the
+  # run uses, for example the -dev image of a lib example. Thus, this value is a default.
+  # A literal value here can replace the IMAGE of the include, because go-task merges
+  # sibling includes in a random sequence for each run.
   IMAGE: '{{.IMAGE | default "ghcr.io/katoptra/toolbox:rsync-v2"}}'
   S3: s3://{{.BUCKET}}
   URL: https://{{.HOST}}
-  STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
-  INDEXED: .state/indexed.txt.xz                # the state as the directory pages last showed it
-  BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'   # batches per run; the rest chain the next run
-  RETRY_S: '{{.RETRY_BASE | default 15}}'       # seconds; a retry sleeps RETRY_S * 2^i plus jitter
-  FRESH_H: '{{.FRESH_HOURS | default 24}}'      # hours; GNU's and CTAN's monitors call a mirror old past 28
-  # A compressed file's type, then the name endings that select it, ftp.gnu.org's types.
-  # The ending wins over the rest of the name: foo.diff.gz is gzip, and a browser handed
-  # text/x-diff draws the compressed bytes as text. label applies it to every upload.
-  # Case matters: .Z is compress.
+  # The listing of the bucket. The key is not an upstream path.
+  STATE: .state/applied.txt.xz
+  # The state as the directory pages showed it the last time.
+  INDEXED: .state/indexed.txt.xz
+  # Batches for each run. The remaining batches chain the next run.
+  BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'
+  # Seconds. A retry waits RETRY_S * 2^i, plus jitter.
+  RETRY_S: '{{.RETRY_BASE | default 15}}'
+  # Hours. After 28 h, the monitors of GNU and CTAN show a mirror as expired.
+  FRESH_H: '{{.FRESH_HOURS | default 24}}'
+  # The type of a compressed file, then the name endings that select it. These are the
+  # types of ftp.gnu.org. The ending is more important than the remaining part of the
+  # name: foo.diff.gz is gzip. A browser that gets text/x-diff shows the compressed bytes
+  # as text. label uses this table for each upload. The endings are case-sensitive: .Z is
+  # compress.
   COMPRESSED: |-
     application/x-gzip .gz .tgz .taz .tz .svgz
     application/x-bzip2 .bz2 .tbz2 .tbz
@@ -61,9 +96,10 @@ vars:
     application/zstd .zst .tzst
     application/x-lzip .lz
     application/x-lzma .lzma
-  # Upstream's clock in a timestamp file, as Unix time or as "YYYY-MM-DD HH:MM" for date -d:
-  # gnu's mirror-updated-timestamp.txt and Savannah's 00_TIME.txt open on Unix time, and
-  # CTAN's timestamp carries 2026-10-08-05-02 after a comment and the master's name.
+  # The clock of upstream in a timestamp file, as Unix time or as "YYYY-MM-DD HH:MM" for
+  # date -d. mirror-updated-timestamp.txt (gnu) and 00_TIME.txt (Savannah) start with Unix
+  # time. The timestamp file of CTAN holds 2026-10-08-05-02, after a comment and the name
+  # of the master.
   STAMP: |-
     awk '!/^#/ { for (i = 1; i <= NF; i++) {
       if ($i ~ /^[0-9]+$/ && length($i) >= 9) { print $i; exit }
@@ -72,32 +108,38 @@ vars:
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
-  # The keyring is read as a plain file from the same mirror as the signature, so the pinned
-  # fingerprint is the only real check; GOODSIG too, because gpgv reports an expired or
-  # revoked key as VALIDSIG with exit 0. An awk program over gpgv's --status-fd 1 lines,
-  # given the fingerprint as k where it is used, so a call var TL_KEY reaches it.
+  # The keyring is a usual file from the same mirror as the signature. Thus, only the
+  # pinned fingerprint identifies the correct key. GOODSIG is also necessary, because gpgv
+  # gives VALIDSIG and exit 0 for an expired key or a revoked key. This is an awk program
+  # for the --status-fd 1 lines of gpgv. Each command that uses it gives it the
+  # fingerprint as k. Thus, a call var TL_KEY can go into the program.
   GPGCHECK: '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}'
-  # An object's size from the headers of a one-byte ranged read, which costs no bandwidth on
-  # a 6.87 GB file and answers where a HEAD does not: Cloudflare streams text/html and sends
-  # it no content-length. content-range carries the total, an empty object answers 416, and
-  # over file:// (the offline check) there is neither, only the length itself.
+  # The size of an object, from the headers of a ranged read of one byte:
+  #   - This read uses no bandwidth on a 6.87 GB file.
+  #   - It also gives the size if a HEAD does not. For example, Cloudflare sends text/html
+  #     as a stream, with no content-length.
+  #   - content-range holds the total. An empty object gives 416.
+  #   - With file:// (the offline check), there is no content-range and no 416. There is
+  #     only the length.
   SIZE: |-
     awk 'tolower($1) == "content-range:" { split($3, a, "/"); r = a[2] }
       tolower($1) == "content-length:" { c = $2 }
       $2 == "416" { z = 1 }
       END { sub(/\r/, "", r); sub(/\r/, "", c); print (r != "" ? r : (z ? 0 : c)) }'
-  # Percent-encoding for awk: enc(s) keeps the unreserved set and "/" and encodes the rest
-  # (upstream paths carry spaces and ( ) [ ] { } & # > ~ $). Spliced into ENCODE, and into a
-  # mirror's page renderer.
+  # Percent-encoding for awk. enc(s) keeps the unreserved set and "/", and it encodes all
+  # other characters. Upstream paths contain spaces and ( ) [ ] { } & # > ~ $. This text
+  # goes into ENCODE, and into the awk program of the pages verb.
   URLENC: |-
     BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
     function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
         out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
-  # Path to URL path. Reads paths, prints path TAB encoded.
+  # A path to a URL path. It reads paths, and it prints each path, a TAB and the encoded
+  # path.
   ENCODE: >-
     awk '{{.URLENC}} { print $0 "\t" enc($0) }'
-  # Every directory above the paths given (stdin, or a path-first TSV file), each once, as
-  # "a/b/" with the root as an empty line, so that directory INDEX is the page's key.
+  # Each directory above the given paths (stdin, or a TSV file with the path first), one
+  # time each, as "a/b/". The root is an empty line. Thus, the directory and INDEX
+  # together give the key of the page.
   ANCESTORS: |-
     awk -F'\t' '!("" in s) { s[""] = 1; print "" }
       { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
@@ -136,14 +178,16 @@ tasks:
     desc: List upstream, narrowed by FILTER when set, and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted
     set: [pipefail]
     cmds:
-      # publish.txt and labeled.txt are appended across batches within a run, and the rest
-      # are written only by the verb that needs them; a reused workspace must start each run
-      # with them gone, or smoke and the report count old lines.
+      # In a run, each batch appends to publish.txt and labeled.txt. Only the verb that
+      # uses one of the other files writes that file. A workspace that a previous run used
+      # must start each run without these files. If not, smoke and the report count lines
+      # from a previous run.
       - rm -f {{.RUN}}/publish.txt {{.RUN}}/labeled.txt {{.RUN}}/orphans.txt {{.RUN}}/unlanded.txt {{.RUN}}/fresh.txt
       - mkdir -p {{.RUN}} {{.STAGING}}
-      # -L lists every symlink as its file. One whose target is gone upstream is reported
-      # and skipped, and rsync exits 23 with the rest of the listing intact; retry passes
-      # that. A listing cut short is caught by LIST_FLOOR, not by the exit code.
+      # -L gives each symlink as the file that it points to. If the target of a symlink is
+      # not upstream, rsync reports the symlink and ignores it. rsync then exits 23, but
+      # the listing has all the other files. retry accepts exit 23. LIST_FLOOR, not the
+      # exit code, finds a truncated listing.
       - task: retry
         vars: {CMD: '{{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
       - {task: normalise}
@@ -152,11 +196,15 @@ tasks:
     desc: RUN/listing.txt (rsync --list-only) to RUN/upstream.txt; every regular file, as "path TAB size TAB mtime", byte-sorted
     set: [pipefail]
     cmds:
-      # The size column may carry commas (rsync 3.x) or be blank for a zero-byte file
-      # (openrsync), so it is found from the fixed-width date, not by field. Every regular
-      # file upstream lists is kept: tlnet stores each container under a revision-stamped
-      # name with a symlink at the stable name beside it, -L resolves both, and the mirror
-      # serves both, as every other mirror of such a tree does.
+      # The size column can contain commas (rsync 3.x), or it can be empty for an empty
+      # file (openrsync). Thus, the program finds the size from the date, which always has
+      # the same width, and not from a field number.
+      #
+      # The program keeps each regular file in the listing of upstream. tlnet keeps each
+      # container with a revision-stamped name, and a symlink with the stable name is
+      # adjacent to it. -L resolves the two, and the mirror sends the two. A mirror that
+      # wants only the stable names makes the listing smaller with FILTER. tlnet does
+      # this.
       - >-
         awk '
           /^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
@@ -164,17 +212,17 @@ tasks:
             size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
             print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
         | LC_ALL=C sort > {{.RUN}}/upstream.txt
-      # A truncated listing must never become a deletion list. LIST_FLOOR is a line count
-      # that a correct listing never falls to, about 90% of its usual size. When it is
-      # unset, there is no guard.
+      # A truncated listing must not become a list of deletions. LIST_FLOOR is a line
+      # count, approximately 90% of the usual size of the listing. A correct listing
+      # always has more lines. When LIST_FLOOR is not set, there is no guard.
       - '{{if .LIST_FLOOR}}test "$(wc -l < {{.RUN}}/upstream.txt)" -gt {{.LIST_FLOOR}}{{else}}echo "no LIST_FLOOR: a truncated listing is not caught here"{{end}}'
 
   state:
     desc: Fetch the state file to RUN/applied.txt; a missing one is rebuilt from a bucket listing (an empty bucket gives an empty state, and the first run fills it)
     cmds:
       - mkdir -p {{.RUN}}
-      # The bucket is the mirror and the state is a cache of it: a missing one costs one
-      # listing, never an upload.
+      # The bucket is the mirror, and the state is a cache of the bucket. Thus, a missing
+      # state causes one listing of the bucket, not an upload.
       - {task: pull, vars: {KEY: '{{.STATE}}', OUT: '{{.RUN}}/applied.txt', MISSING: 'echo "no state at {{.STATE}}: rebuilding it from the bucket" >&2; touch {{.RUN}}/rebuild-now'}}
 
   pull:
@@ -182,8 +230,8 @@ tasks:
     internal: true
     requires: {vars: [KEY, OUT, MISSING]}
     cmds:
-      # aws s3 ls exits 1 when nothing matches and 0 when the key exists; any other code is
-      # a real error and must not be mistaken for a missing key.
+      # aws s3 ls exits 1 when it finds no such key, and 0 when the key is there. Each
+      # other exit code is an error, not a missing key.
       - |
         rc=0; aws s3 ls {{.S3}}/{{.KEY}} > /dev/null || rc=$?
         case $rc in
@@ -205,14 +253,18 @@ tasks:
     status: ['test ! -f {{.RUN}}/rebuild-now']
     set: [pipefail]
     cmds:
-      # aws s3 ls: "date time size key"; the key may hold spaces. R2 does not list in byte
-      # order (install-tl after install-tl.zip.sha512.asc), so sort before join and comm.
-      # Exit 1 is "nothing listed", which an empty bucket is; pipefail must not fail on it.
+      # aws s3 ls gives "date time size key". The key can contain spaces. R2 does not sort
+      # its listing with byte collation (install-tl follows install-tl.zip.sha512.asc).
+      # Thus, the command sorts the listing before join and comm.
+      #
+      # Exit 1 is "no keys", which is an empty bucket. The command accepts exit 1. If not,
+      # pipefail stops the command for an empty bucket.
       - >-
         { aws s3 ls --recursive {{.S3}}/ || test $? -eq 1; }
         | awk '{ if (match($0, /^[^ ]+ +[^ ]+ +[0-9]+ /)) print substr($0, RLENGTH + 1) "\t" $3 }'
         | LC_ALL=C sort > {{.RUN}}/bucket.txt
-      # A key is applied when the bucket has it at upstream's size; its mtime is upstream's.
+      # A key is applied when the bucket has it at the size of upstream. Its mtime is the
+      # mtime of upstream.
       - >-
         LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 {{.RUN}}/upstream.txt {{.RUN}}/bucket.txt
         | awk -F'\t' -v OFS='\t' '$2 == $4 { print $1, $2, $3 }' > {{.RUN}}/applied.new
@@ -224,10 +276,11 @@ tasks:
     desc: RUN/changed.txt (lines upstream has and the state lacks, plus the file each changed signed sha512 names), deleted.txt (paths the state has and upstream lacks), paths.txt
     cmds:
       - LC_ALL=C comm -13 {{.RUN}}/applied.txt {{.RUN}}/upstream.txt > {{.RUN}}/changed.txt
-      # Upstream can write a signed sha512 again while the file it names stands still: TeX
-      # Live's nightly build checksums and signs its prebuilt installer every night. The
-      # named file joins the delta, so verify checks it against the new sha512 in staging.
-      # The pattern is verify's.
+      # Upstream can write a signed sha512 again while the file that it identifies does
+      # not change. Each night, the build of TeX Live makes a new checksum and a new
+      # signature for its prebuilt installer. The file that the sha512 identifies goes
+      # into the delta. Thus, verify examines it with the new sha512 in staging. The
+      # pattern is the same as in verify.
       - >-
         awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
         $1 in want' {{.RUN}}/changed.txt {{.RUN}}/upstream.txt | LC_ALL=C sort -u -o {{.RUN}}/changed.txt - {{.RUN}}/changed.txt
@@ -237,30 +290,40 @@ tasks:
   split:
     desc: Refuse a tree over CEILING_GB (when set) or a file the disk cannot hold; split changed.txt into RUN/batch-NNNN.txt
     cmds:
-      # CEILING_GB unset or 0 is no ceiling; the size is printed either way.
+      # CEILING_GB unset or 0 gives no ceiling. The command always prints the size.
       - >-
         {{if .CEILING_GB}}awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
           END { printf "upstream: %d objects, %.2f GB, ceiling %d GB\n", NR, s / 1e9, gb; exit (s > gb * 1e9) }' \
         {{.RUN}}/upstream.txt{{else}}awk -F'\t' '{ s += $2 } END { printf "upstream: %d objects, %.2f GB, no ceiling\n", NR, s / 1e9 }' {{.RUN}}/upstream.txt{{end}}
       - mkdir -p {{.STAGING}} && find {{.STAGING}} -mindepth 1 -delete
       - df -Pk {{.STAGING}}
-      # The largest single file must fit with 1 GiB to spare for RUN's text and the OS.
+      # The disk must have space for the largest file, plus 1 GiB for the text files of
+      # RUN and for the OS.
       - >-
         awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" \
           '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
         {{.RUN}}/changed.txt
       - rm -f {{.RUN}}/batch-*.txt
-      # Cumulative size from the listing; nothing is touched to split. A file over the cap is
-      # a batch by itself and leaves the running batch alone. The decision batch goes last.
-      # It holds TL's tlpkg/ (the tlpdb) and the files at the bucket root, the FRESH_KEY
-      # file among them. So nothing that a client reads to decide what to fetch can name a
-      # key that has not landed.
-      # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, and diff puts x in the delta whenever x.sha512 is, so verify always finds the file its signature names.
-      # ponytail: BATCH_GB is spliced bare because it lands inside $(( )), where a quoted
-      # operand is a syntax error. What keeps it safe is the workflow refusing a vars input
-      # that is not a plain value. Ceiling: another caller handing untrusted text to
-      # `task sync --`. Upgrade path: assert it is numeric here, and regenerate render.txt
-      # in lib, ctan and tlnet, which all record this line.
+      # The program adds the sizes in the listing. It uses only the listing to divide the
+      # delta, not the files. A file that is larger than BATCH_GB is a batch with no other
+      # file, and the batch that the program fills does not change.
+      #
+      # The decision batch is the last batch. It holds tlpkg/ of TL (the tlpdb) and the
+      # files at the bucket root, which include the FRESH_KEY file. A client reads these
+      # files before it selects the files to download. Because this batch is the last
+      # batch, these files cannot identify a key that is not in the bucket at that time.
+      #
+      # A path that has the previous path as its first part (x, x.sha512, x.sha512.asc)
+      # does not start a new batch. Also, diff puts x in the delta when x.sha512 is in the
+      # delta. Thus, verify always finds the file that its signature identifies.
+      #
+      # ponytail: BATCH_GB goes into the command with no quotes, because it is in $(( )),
+      # where a quoted operand is a syntax error. The workflow keeps it safe, because it
+      # rejects a vars input that validate-vars.sh does not accept. Ceiling: a different
+      # caller that gives text that is not safe to `task sync --`. Upgrade path: make sure
+      # here that the value is a number. Then do `task render-update` in lib and in each
+      # rsync mirror (ctan, tlnet, gnu and nongnu). The render.txt of each records this
+      # line.
       - >-
         awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
           index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
@@ -298,14 +361,15 @@ tasks:
       - for: {var: BATCHES, split: "\n", as: B}
         task: batch
         vars: {B: '{{.B}}'}
-      # Batches past MAX_BATCHES wait for the next run; the chain file asks the workflow to
-      # queue it now rather than at the next hour, which is how an empty bucket fills.
+      # The batches after MAX_BATCHES wait for the next run. The chain file tells the
+      # workflow to queue that run immediately, not at the next hour. This is how an empty
+      # bucket fills.
       - test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -le {{.BATCHES_MAX}} || touch {{.RUN}}/chain
 
   batch:
     internal: true
     requires: {vars: [B]}
-    status: ['test -z "{{.B}}"']   # an empty delta loops once with an empty item
+    status: ['test -z "{{.B}}"']   # for an empty delta, the loop operates one time, with an empty item
     cmds:
       - {task: fetch, vars: {B: '{{.B}}'}}
       - {task: verify, vars: {B: '{{.B}}'}}
@@ -321,41 +385,56 @@ tasks:
     cmds:
       - find {{.STAGING}} -mindepth 1 -delete
       - cut -f1 {{.B}} > {{.RUN}}/files.txt
-      # --files-from implies --relative (parents are created) and not -r; -L turns every
-      # symlink into its file. A path that vanished since the listing is skipped: it never
-      # lands in staging, so merge (the batch joined against what staging holds) drops it
-      # from the state rather than recording it; any object it once had in the bucket
-      # waits for the next reconcile to clean up. No --partial: staging is emptied every
-      # batch, so there is nothing to resume, and a partial file must never reach the bucket.
+      # With --files-from, rsync uses --relative (it makes the parent directories) and not
+      # -r. -L changes each symlink into its file. rsync ignores a path that upstream
+      # removed after the listing. That path does not go into staging. Thus, merge (a join
+      # of the batch with the files in staging) removes it from the state, and does not
+      # record it. If the bucket has an object for that path, the object stays until the
+      # next reconcile removes it.
+      #
+      # No --partial. Each batch removes all files from staging. Thus, there is nothing to
+      # continue. Also, a file that rsync did not complete must not go into the bucket.
       - task: retry
         vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/files.txt --ignore-missing-args {{.SOURCE}} {{.STAGING}}/'}
 
   verify:
-    requires: {vars: [B]}   # public, so a mirror can run it by hand against a canned batch
+    # Not internal. Thus, a mirror can start it manually on a batch from a fixture.
+    requires: {vars: [B]}
     status: ['test -z "{{.TL_KEY}}"']   # the no-op hook until a mirror pins a key
-    # Each command works from STAGING by its own cd, not dir:, which a path-based include
-    # resolves against the include's directory and no call var can move.
+    # Each command starts with a cd to STAGING, not dir:. go-task resolves dir: against
+    # the directory of an include that it reads from a path, and no call var can change
+    # that.
     cmds:
-      # Every signed sha512 in this batch (root installers and updaters, the tlpdb) checks
-      # against the keyring already pinned by prepare. The while loop's status is the pipeline's.
+      # This command examines each signed sha512 in this batch (the installers and
+      # updaters at the root, and the tlpdb) with the keyring that prepare pinned. The
+      # status of the while loop is the status of the pipeline.
       - >-
         cd {{.STAGING}} && cut -f1 {{.B}} | grep -E '^{{.TL}}/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do
         (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
         gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k={{.TL_KEY}} '{{.GPGCHECK}}')
         || exit 1; done
-      # Every TL container in this batch must match the checksum the verified tlpdb gives
-      # it, under both the names upstream carries: the stable one the tlpdb names and the
-      # revision-stamped one it describes, the same bytes and so the same checksum. The END
-      # clause is the belt: a container the tlpdb says nothing about cannot pass. Written to
-      # a file rather than piped, so awk's status is its own; verify runs without pipefail
-      # because the grep above legitimately matches nothing.
-      # A batch that carries no container skips all of it. RUN/tl belongs to prepare, whose
-      # status gate is the delta touching TL at all, so an hour that changes nothing there
-      # never makes the directory and the redirect below would have nowhere to write. want is
-      # empty in that case anyway, leaving the belt nothing to refuse. Whenever the guard does
-      # pass, the batch holds a TL path, so prepare ran and RUN/tl is there. The sums are
-      # checked inside the same command that writes them, so no batch is ever checked against
-      # the sums left by the batch before it -- fetch empties staging between the two.
+      # Each TL container in this batch must agree with the checksum that the tlpdb gives
+      # for it. prepare examined that tlpdb. The check uses the two names that upstream
+      # has:
+      #   - the stable name, which the tlpdb gives
+      #   - the revision-stamped name, which the tlpdb gives through the revision.
+      # The two names have the same bytes, and thus the same checksum. The END clause is a
+      # second check: it rejects a container that is not in the tlpdb.
+      #
+      # The awk program writes to a file, not to a pipe. Thus, the status of the command
+      # is the status of awk. verify operates without pipefail, because the grep in the
+      # first command of verify can correctly find nothing.
+      #
+      # A batch with no container does not do this check. prepare makes RUN/tl, and
+      # prepare operates only when the delta has a path in TL. Thus, in an hour with no
+      # change in TL, there is no RUN/tl, and the redirect in the command that follows
+      # cannot write. But then want is also empty, and the END clause has nothing to
+      # reject. When the guard lets a batch continue, the batch holds a TL path. Thus,
+      # prepare operated, and RUN/tl is there.
+      #
+      # The same command writes the sums and examines them. Thus, the check of a batch
+      # does not use the sums of the batch before it. fetch removes all files from staging
+      # between the two.
       - >-
         cd {{.STAGING}} && { test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
         awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
@@ -369,10 +448,12 @@ tasks:
           END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
         {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
         shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }; }
-      # The decision batch. The tlpdb it carries must be the one verified at the start of
-      # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
-      # container it names must be in the bucket after this run: the state, plus this
-      # batch, minus this run's deletions.
+      # The decision batch. For this batch, these conditions must be correct:
+      #   - The tlpdb in the batch is the tlpdb that prepare examined at the start of the
+      #     run.
+      #   - The .xz that tlmgr downloads decompresses to that tlpdb, byte for byte.
+      #   - Each container that the tlpdb identifies is in the bucket after this run: the
+      #     state, plus this batch, minus the deletions of this run.
       - >-
         cd {{.STAGING}} && { test ! -f {{.TL}}/tlpkg/texlive.tlpdb || {
         cmp {{.TL}}/tlpkg/texlive.tlpdb {{.RUN}}/tl/tlpkg/texlive.tlpdb &&
@@ -389,26 +470,29 @@ tasks:
   publish:
     internal: true
     requires: {vars: [B]}
-    set: [pipefail]   # tee must never mask a failed upload
+    set: [pipefail]   # tee must not change the exit of an upload that has a failure
     cmds:
       - {task: label}
       - cat {{.RUN}}/labels.txt >> {{.RUN}}/labeled.txt
-      # The CLI takes one --content-type a call and guesses from the name without one, so
-      # each type's files go up from a tree of their own, RUN/up/N/, and come back for
-      # merge. cp --recursive never lists the destination. It sends each file as one
-      # PutObject, or in parts above the threshold in the image's aws.config. Keys are the
-      # paths under the tree, which are upstream's own.
+      # The CLI accepts one --content-type for each command. Without it, the CLI selects a
+      # type from the name. Thus, the files of each type go to the bucket from one tree
+      # for that type, RUN/up/N/, and then go back to staging for merge. cp --recursive
+      # does not get a listing of the destination. It sends each file as one PutObject, or
+      # in parts above the threshold in the aws.config of the image. The keys are the
+      # paths in the tree, which are the paths of upstream.
       - {task: label-trees, vars: {TO: up}}
       - >-
         for d in {{.RUN}}/up/*/; do test -d "$d" || continue;
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type "$(cat "${d%/}.type")" "$d" {{.S3}}/ | tee -a {{.RUN}}/publish.txt; done
       - {task: label-trees, vars: {TO: staging}}
-      # The FRESH_KEY file goes up alone, after all other files. It dates the tree, and
-      # monitors such as mirmon read it.
-      # ponytail: this command and label-trees splice FRESH_KEY bare into an awk string and
-      # a Python string. Ceiling: a key with a quote, a backslash or a non-ASCII character
-      # breaks them. Upgrade path: give it to awk with -v and to Python as an argument.
-      # Then regenerate render.txt in lib and in each rsync mirror.
+      # The FRESH_KEY file goes to the bucket last, in one more command. It gives the date
+      # of the tree, and monitors (for example, mirmon) read it.
+      #
+      # ponytail: this command and label-trees put FRESH_KEY, with no quotes, into an awk
+      # string and a Python string. Ceiling: a key with a quote, a backslash or a
+      # non-ASCII character makes these strings incorrect. Upgrade path: give it to awk
+      # with -v, and to Python as an argument. Then do `task render-update` in lib and in
+      # each rsync mirror.
       - >-
         {{if .FRESH_KEY}}test ! -f {{.STAGING}}/{{shellQuote .FRESH_KEY}} ||
         aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == "{{.FRESH_KEY}}" { print $2 }' {{.RUN}}/labels.txt)"
@@ -419,15 +503,20 @@ tasks:
     vars:
       DIR: '{{if .DIR}}{{.DIR}}{{else}}{{.STAGING}}{{end}}'
     cmds:
-      # Rules, in order. A COMPRESSED ending names the type outright. An ending Python reads
-      # as compressed that COMPRESSED lacks (.br) gets a signature's type or
-      # application/octet-stream, never text: brotli has no signature to find. Otherwise the
-      # image's mime.types names it, unless it is one a browser draws (text, XML, JSON,
-      # JavaScript, PDF) and the bytes disagree: compressed, or carrying a NUL, or a PDF
-      # without %PDF-. A name it cannot type is typed from the bytes: a known signature,
-      # text/plain without a NUL, application/octet-stream with one. A stray control byte is
-      # not a NUL: CTAN's old .sty files carry ^Z and stay text. "./" keeps guess_type from
-      # reading a name with a colon as a URL scheme.
+      # The rules, in sequence:
+      #   1. A COMPRESSED ending gives the type directly.
+      #   2. An ending that Python reads as compressed and that COMPRESSED does not have
+      #      (.br) gets the type of a signature, or application/octet-stream. It does not
+      #      get text, because brotli has no signature to find.
+      #   3. If not, the mime.types of the image gives the type. But a type that a browser
+      #      shows (text, XML, JSON, JavaScript, PDF) must agree with the bytes. If the
+      #      bytes are compressed, contain a NUL, or are a PDF without %PDF-, they give
+      #      the type.
+      #   4. A name that has no type in mime.types gets a type from its bytes. This type
+      #      is a known signature, text/plain without a NUL, or application/octet-stream
+      #      with a NUL.
+      # A control byte is not a NUL: some .sty files of CTAN contain ^Z, and they stay
+      # text. Without "./", guess_type reads a name with a colon as a URL scheme.
       - |
         python3 -I - {{shellQuote .DIR}} {{shellQuote .COMPRESSED}} > {{.RUN}}/labels.raw <<'PY'
         import mimetypes, os, sys
@@ -477,11 +566,13 @@ tasks:
     internal: true
     requires: {vars: [TO]}
     cmds:
-      # Renames on one filesystem, so no byte is copied, and staging is whole again for
-      # merge. A run that dies between the two leaves files under up/; the next run's fetch
-      # starts staging from nothing and this starts up/ from nothing.
+      # Renames on one filesystem. Thus, the verb makes no copy of a byte, and staging has
+      # all its files again for merge. If a run stops between TO=up and TO=staging, files
+      # stay in up/. The fetch of the next run starts staging empty, and this verb starts
+      # up/ empty.
+      #
       # The FRESH_KEY file stays in staging, and publish sends it last. With no FRESH_KEY,
-      # the empty name matches no file, so every file moves.
+      # the empty name agrees with no file. Thus, all files move.
       - |
         python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} <<'PY'
         import os, shutil, sys
@@ -519,9 +610,11 @@ tasks:
     set: [pipefail]
     requires: {vars: [B]}
     cmds:
-      # Only what landed enters the state: a path that vanished upstream between listing
-      # and fetch is dropped, so the state never names a key the bucket lacks. Called with
-      # deleted.txt (bare paths, empty staging) this is a pure drop. 0.1 s on 511k lines.
+      # Only the files that are in staging go into the state. Thus, merge removes a path
+      # that upstream removed between the listing and fetch. The state then does not
+      # identify a key that the bucket does not have. With deleted.txt as B (paths only,
+      # and an empty staging), merge only removes lines. It operates in 0.1 s on 511k
+      # lines.
       - (cd {{.STAGING}} && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > {{.RUN}}/landed.txt
       - >-
         awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
@@ -545,7 +638,8 @@ tasks:
     set: [pipefail]
     cmds:
       - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.K}} {{.RUN}}/del-
-      # Quiet mode returns only errors, and the CLI exits 0 even then, so grep for them.
+      # In quiet mode, the CLI gives only the errors, and it exits 0 also when there are
+      # errors. Thus, the command uses grep to find them.
       - >-
         for f in {{.RUN}}/del-*; do
         awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
@@ -556,11 +650,13 @@ tasks:
   delete:
     desc: Remove the keys in D (RUN/deleted.txt unless given), 1,000 per DeleteObjects call and free, and drop them from the state
     vars:
-      # reconcile passes its own orphan list, so the run's deleted.txt, which report counts,
-      # is left as diff wrote it.
+      # reconcile gives its orphan list. Thus, the deleted.txt of the run, which report
+      # counts, does not change after diff writes it.
       D: '{{if .D}}{{.D}}{{else}}{{.RUN}}/deleted.txt{{end}}'
-    # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
-    # still name these containers, so they go only in the hour every batch has landed.
+    # This verb does nothing when there are no keys to remove, or when a batch waits for
+    # the next run. While a batch waits, the tlpdb in the bucket can identify these
+    # containers. Thus, delete removes them only in the hour when all the batches are in
+    # the bucket.
     status: ['test ! -s {{.D}} || test -f {{.RUN}}/chain']
     cmds:
       - {task: remove, vars: {K: '{{.D}}'}}
@@ -568,20 +664,26 @@ tasks:
 
   reconcile:
     desc: When due left .run/reconcile, rebuild the state from a bucket listing, delete keys that neither upstream nor .state/ owns, and record the reconcile
-    # Not while a batch waits for a later run: delete would hold the orphans back, so the run
-    # stays due and the chained run that lands the last batch reconciles. A run that fails
-    # before the last line records nothing either, so the next run is due too.
+    # Not while a batch waits for the next run. Then delete keeps the orphans. Thus, the
+    # run stays due, and the chained run that puts the last batch in the bucket
+    # reconciles. A run that has a failure before the last line also records nothing.
+    # Thus, the next run is also due.
     status: ['test ! -f {{.RUN}}/reconcile || test -f {{.RUN}}/chain']
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
-      # A mirror's own keys are no orphans: the bucket-root keys in OWN, and, only when
-      # INDEX is set, the directory pages an index hook draws under two keys. One key names
-      # itself (the INDEX suffix); the other is a bare directory of the state,
-      # indistinguishable from an upstream path, so the state's own directory set is the
-      # list. A path that stops being a directory upstream leaves the set and is judged as
-      # a file. Without INDEX both lists are empty: the suffix would otherwise degenerate to
-      # "/" and spare every key that ends in one.
+      # The keys of the mirror are not orphans:
+      #   - the keys at the bucket root in OWN
+      #   - only when INDEX is set, the directory pages that an index hook writes to two
+      #     keys.
+      # One key of a page has the INDEX suffix, which identifies it. The other key is the
+      # path of a directory of the state, without the slash at the end. It is the same as
+      # an upstream path. Thus, the list is the directory set of the state. When upstream
+      # changes a directory into a file, the path goes out of the set, and reconcile
+      # examines it as a file.
+      #
+      # Without INDEX, the two lists are empty. If not, the suffix becomes "/", and
+      # reconcile keeps each key that ends in "/".
       - >-
         {{if .INDEX}}{{.ANCESTORS}} {{.RUN}}/applied.txt
         | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt{{else}}: > {{.RUN}}/index-keys.txt{{end}}
@@ -601,72 +703,91 @@ tasks:
     vars:
       SLASH: '{{.RUN}}/slash'
     cmds:
-      # No INDEXED means no page has been drawn: every directory is drawn once (ctan's 27k take
-      # about ten minutes), and the file exists from then on.
+      # With no INDEXED, there is no page. Then index makes a page for each directory one
+      # time (for the 27k directories of ctan, this is approximately ten minutes). After
+      # that, the file is there.
       - {task: pull, vars: {KEY: '{{.INDEXED}}', OUT: '{{.RUN}}/indexed.txt', MISSING: ': > {{.RUN}}/indexed.txt'}}
       - {task: pages}
-      # Staging holds nothing but pages by now: checkpoint emptied it. They stay for smoke;
-      # the next run's split clears them. Not appended to publish.txt: smoke sizes that
-      # sample against upstream, which has no pages.
+      # At this point, staging holds only pages, because checkpoint removed the files. The
+      # pages stay for smoke. The split verb of the next run removes them. The verb does
+      # not append them to publish.txt, because smoke compares the size of that sample
+      # with upstream, which has no pages.
       - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html {{.STAGING}}/ {{.S3}}/
-      # One upload per depth, because no single tree holds both a/b and a/b/. A slashless key
-      # carries no suffix to guess from, so the type is given: without it the CLI sends
-      # binary/octet-stream and a browser downloads the page instead of drawing it.
+      # One upload for each depth, because no tree can hold a/b and a/b/ together. A
+      # slashless key has no suffix that the CLI can use. Thus, the command gives the
+      # type. Without it, the CLI sends binary/octet-stream, and a browser downloads the
+      # page and does not show it.
       - >-
         for d in {{.SLASH}}/*/; do test -d "$d" || continue;
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html "$d" {{.S3}}/; done
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
-      # The pages now show the state, and the bucket already holds it: checkpoint put it there
-      # before this verb ran. One server-side copy moves INDEXED forward; no bytes leave the
-      # runner. A run that dies before this line redraws the same pages next run.
+      # At this point, the pages show the state, and the bucket holds that state, because
+      # checkpoint put it there before this verb started. One server-side copy makes
+      # INDEXED the same as the state. No bytes go out of the runner. If a run stops
+      # before this line, the next run makes the same pages again.
       - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
 
   pages:
     desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied
     set: [pipefail]
     vars:
-      # Every page is written under two keys: <dir>/INDEX, which the zone's rewrite serves for a
-      # directory URL, and <dir> without its trailing slash, which serves the same URL written
-      # without one, where every other mirror answers 301. No filesystem holds both a/b and
-      # a/b/, so the second copies stage one tree per directory depth and upload a tree at a
-      # time. A task var, because a global cannot follow a RUN the caller passes.
+      # The verb writes each page to two keys:
+      #   - <dir>/INDEX. For a directory URL, the rewrite of the zone sends this key.
+      #   - <dir> without its slash at the end. This key is for the same URL without the
+      #     slash. For that URL, all other mirrors send 301.
+      # No filesystem can hold a/b and a/b/ together. Thus, the second copies go into one
+      # tree for each directory depth, and the upload sends one tree at a time. SLASH is a
+      # task var, because a global var cannot follow a RUN that the caller gives.
       SLASH: '{{.RUN}}/slash'
     cmds:
       - mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete
-      # A page changes when a file in its directory or a directory below it appears, changes
-      # or goes, so every ancestor of every changed line is redrawn. ponytail: about five
-      # pages per touched directory where one would often do; ceiling is Class A, a few
-      # hundred a day against a million free. Upgrade: comm the directory sets of the two
-      # files and redraw a parent only for a new or gone child.
+      # A page changes when a file in its directory, or a directory below it, is added,
+      # changed or removed. Thus, the verb makes the page of each ancestor of each changed
+      # line again.
+      #
+      # ponytail: approximately five pages for each changed directory. Frequently, one
+      # page is sufficient. Ceiling: Class A operations, some hundreds each day, of the
+      # million that the R2 free tier includes. Upgrade: use comm on the directory sets of
+      # the two files. Then make a parent page again only for a new child or a removed
+      # child.
       - >-
         LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
         | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
       - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
-      # A gone directory takes both of its keys with it. The root has no slashless key.
+      # When a directory is removed, the verb removes its two keys. The root has no
+      # slashless key.
       - >-
         LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
         | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
-      # SLASH/<depth>/ holds the slashless copies of the pages at that depth. Every file in
-      # one tree has the same number of components, so no file is another's parent directory
-      # and the tree can be uploaded whole. -r because the root is the one directory with no
-      # slashless key: a run whose only dirty directory is the root -- root files alone, or
-      # a deletion that leaves no dirty directory still standing -- gives this awk nothing to
-      # print, and xargs without it runs mkdir once with no operands.
+      # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
+      # one tree have the same number of components. Thus, no file is the parent directory
+      # of a different file, and the upload can send the full tree.
+      #
+      # -r is necessary, because the root is the only directory with no slashless key. In
+      # these runs, the root is the only dirty directory:
+      #   - a run that changes only root files
+      #   - a run with a deletion, after which the root is the only dirty directory that
+      #     is there.
+      # In such a run, this awk prints nothing. Without -r, xargs then starts mkdir one
+      # time, with no operands.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
           for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
         | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
-      # Entries, "dir TAB d|f TAB name TAB size TAB mtime", from the state: what the bucket
-      # holds, never upstream. Sorted, a directory's lines are contiguous with its
-      # subdirectories first, so each page is written once and closed. Names are
-      # percent-encoded in href and HTML-escaped in text. The page is built whole and written
-      # under both of its keys, so the two are the same bytes; the base href is what lets one
-      # document serve /dir/ and /dir alike, where a relative href would otherwise resolve
-      # against the parent for the second. PAGE_FOOT closes every page, %s standing for the
-      # directory's encoded path; empty, the page closes on its table.
+      # The verb gets the entries, "dir TAB d|f TAB name TAB size TAB mtime", from the
+      # state: the objects in the bucket, not upstream. After the sort, the lines of a
+      # directory are together, with its subdirectories first. Thus, the verb writes each
+      # page one time and closes it. The verb percent-encodes each name in href and
+      # HTML-escapes it in text.
+      #
+      # The verb makes the full page, and then writes it to its two keys. Thus, the two
+      # keys have the same bytes. With the base href, one document is correct for /dir/
+      # and for /dir. Without it, a relative href in the second resolves against the
+      # parent. PAGE_FOOT is at the end of each page, with %s for the encoded path of the
+      # directory. When PAGE_FOOT is empty, the table is the last part of the page.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
@@ -693,20 +814,27 @@ tasks:
   smoke:
     desc: Read a key of every type this run published back through the domain, size against the listing and type against the label; with TL set the tlpdb sha512 against the verified copy; with INDEX set one redrawn page under both keys; with CANARY set the canary, as a Perl client, against the bucket's copy; no Content-Encoding on a .tar.gz; warn of paths that never land; fresh; then the mirror's own checks, smoke-mirror
     vars:
-      # The sample below reads the FRESH_KEY file only once the state says that it landed.
-      # It rides the decision batch, the last one, so a first fill capped at MAX_BATCHES has
-      # not reached it and the bucket answers 404 to a key it has never held; the run it
-      # lands in and every run after name it. Empty is the only falsy value, so the path is
-      # both the flag and the key.
+      # The sample in the first command of smoke reads the FRESH_KEY file only when the
+      # state shows that the file is in the bucket. The file is in the decision batch,
+      # which is the last batch. A first fill that stops at MAX_BATCHES does not do that
+      # batch. The bucket then gives 404 for the key, because no run put it in the bucket.
+      # The run that puts the file in the bucket, and each run after it, include the file
+      # in the sample.
+      #
+      # An {{if}} on a string goes to {{else}} only when the string is empty. Thus, the
+      # path is the flag and also the key.
       TS:
         sh: |-
           {{if .FRESH_KEY}}awk -F'\t' -v k={{shellQuote .FRESH_KEY}} '$1 == k { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true{{end}}
     cmds:
-      # The sample is the first key of every type label gave this run, read back by its
-      # encoded URL and looked up by its raw path: its size against the listing, and over
-      # http its Content-Type against the label, which is what finds the CLI, R2 or the zone
-      # serving a type other than the one decided. The FRESH_KEY file joins for its size
-      # alone. A sampled key is as likely as any other to carry a space.
+      # The sample is the first key of each type that label gave in this run. The command
+      # reads each key again with its encoded URL, and finds its line in the listing with
+      # its path. It compares the size with the listing. With http, it also compares the
+      # Content-Type with the label. This finds the CLI, R2 or the zone when one of them
+      # sends a type that is different from the selected type.
+      #
+      # The FRESH_KEY file is in the sample for its size only. A key in the sample can
+      # contain a space. All other keys can also contain a space.
       - >-
         { {{if .TS}}printf '%s\t\n' {{shellQuote .TS}};{{end}}
         awk -F'\t' '!seen[$2]++' {{.RUN}}/labeled.txt 2>/dev/null; }
@@ -718,19 +846,24 @@ tasks:
         ct=$(printf '%s\n' "$h" | awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); print $2 }');
         echo "$k: $got bytes (listing: $want), served as ${ct:-no type} (label: ${t:-none})"; test "$got" = "$want" || exit 1;
         case "{{.URL}}" in http*) test -z "$t" || test "$ct" = "$t" || exit 1 ;; esac; done
-      # The tlpdb key rides the decision batch, the last one, so a run that stopped at
-      # MAX_BATCHES has not published this hour's copy yet and has nothing to compare.
+      # The tlpdb key is in the decision batch, the last batch. Thus, a run that stopped
+      # at MAX_BATCHES did not publish the copy of this hour, and it has nothing to
+      # compare.
       - >-
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test -f {{.RUN}}/chain ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
-      # One page this run redrew, read back under both of its keys by key (no zone rule
-      # needed) and sized against the copy still in staging, the same one-byte ranged read as
-      # the sample. Both keys hold the same bytes, so one staged copy sizes both. The root has
-      # no slashless key. ${d} in braces: the INDEX that follows it opens with a letter, and
-      # $d{{.INDEX}} names a variable that does not exist; test -n makes that a stated
-      # failure, not a size of "". The slashless key is read only over http: the offline
-      # check serves the pages off a filesystem, which cannot hold both a/b and a/b/.
+      # This command reads one of the pages that this run made. It reads that page at its
+      # two keys, with each key in the URL (no zone rule is necessary). It compares the
+      # size with the copy in staging, with the same ranged read of one byte as the
+      # sample. The two keys hold the same bytes. Thus, one copy in staging gives the size
+      # for the two. The root has no slashless key.
+      #
+      # ${d} is in braces, because the INDEX after it starts with a letter. $d{{.INDEX}}
+      # is the name of a variable that is not there. test -n then stops the command, and
+      # does not give a size of "". The command reads the slashless key only with http.
+      # The offline check gets the pages from a filesystem, which cannot hold a/b and a/b/
+      # together.
       - >-
         {{if .INDEX}}test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
         want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want";
@@ -739,15 +872,19 @@ tasks:
         | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
         echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }{{else}}echo "no INDEX: no directory pages to read back"{{end}}
-      # Cloudflare's HTML rewriters sit between R2 and the client, so what finds them is the
-      # object compared with what the domain serves. A size check is not enough: Automatic
-      # HTTPS Rewrites can lengthen a link by a byte while the parser it runs in collapses a
-      # newline inside the same tag, leaving the length unchanged and the bytes different.
-      # CANARY carries plain http:// links or mailto: addresses, which HTTPS Rewrites, Email
-      # Obfuscation and Rocket Loader each alter. It is read as libwww-perl, because Browser
-      # Integrity Check answers 403 to that client and every other mirror serves it; CURL's -f
-      # makes the 403 the failure. Skipped over file://, which has no bucket to read, and until
-      # the state holds the path.
+      # The HTML rewriters of Cloudflare are between R2 and the client. Thus, the check
+      # compares the object with the file that the domain sends. A size check is not
+      # sufficient. Automatic HTTPS Rewrites can make a link one byte longer, while the
+      # parser of that feature removes a newline in the same tag. Then the length does not
+      # change, but the bytes are different.
+      #
+      # CANARY holds http:// links (not https://) or mailto: addresses. HTTPS Rewrites,
+      # Email Obfuscation and Rocket Loader each change them. The command reads CANARY as
+      # libwww-perl, because Browser Integrity Check gives 403 to that client. All other
+      # mirrors send the file to that client. The -f of CURL makes the 403 a failure.
+      #
+      # The command does not do this check with file://, which has no bucket to read. It
+      # also does not do it before the state holds the path.
       - >-
         {{if .CANARY}}h={{shellQuote .CANARY}}; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) n= ;; esac;
@@ -755,13 +892,16 @@ tasks:
         aws s3 cp {{.AWS_FLAGS}} "{{.S3}}/$h" {{.RUN}}/canary.html &&
         {{.CURL}} -A "libwww-perl/6.67" "{{.URL}}/$h" | cmp - {{.RUN}}/canary.html &&
         echo "$h: $n bytes, served to a libwww-perl client as the bucket holds them"; fi{{else}}echo "no CANARY: the edge's HTML rewriters and client filter go unchecked"{{end}}
-      # A stored Content-Encoding tells every client to unpack the file in flight, so a
-      # tarball arrives as a tar; GNU's mirror guidelines ask for none. Python guesses
-      # ("application/x-tar", "gzip") for foo.tar.gz; this is the check that neither label
-      # nor a CLI bump ever stores the second half. The first non-empty .tar.gz in the
-      # state, read with no Accept-Encoding, must come back without one; an empty one answers
-      # the ranged read with 416, which CURL's -f would fail. Skipped over file:// and when
-      # the state holds no such file.
+      # A Content-Encoding on an object tells each client to decompress the file during
+      # the download. Thus, the client gets a tarball as a tar. The mirror guidelines of
+      # GNU recommend no Content-Encoding. For foo.tar.gz, guess_type in Python gives
+      # ("application/x-tar", "gzip"). This check makes sure that label, and a new version
+      # of the CLI, do not put the second value on the object.
+      #
+      # The command reads the first .tar.gz in the state that is not empty, with no
+      # Accept-Encoding. The headers must show no Content-Encoding. An empty .tar.gz gives
+      # 416 for the ranged read, and the -f of CURL makes that a failure. The command does
+      # not do this check with file://, or when the state holds no such file.
       - >-
         g=$(awk -F'\t' '$1 ~ /\.tar\.gz$/ && $2 > 0 { print $1; exit }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) g= ;; esac;
@@ -769,24 +909,27 @@ tasks:
         u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u") &&
         if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi &&
         echo "$g: served with no content-encoding"; fi
-      # A path upstream lists but rsync cannot send (exit 23, which retry passes) never
-      # lands, so every run fetches it again and the run stays green. Once every batch has
-      # been worked, the delta lines the state still lacks are those: report counts them,
-      # and each of the first 20 is a warning on the Actions run.
+      # A path in the listing of upstream that rsync cannot send (exit 23, which retry
+      # accepts) does not go into the bucket. Thus, each run downloads it again, and the
+      # run shows no failure. When the run did all the batches, the lines of the delta
+      # that the state does not have are those paths. report counts them, and each of the
+      # first 20 is a warning on the Actions run.
       - >-
         if test -f {{.RUN}}/changed.txt && test ! -f {{.RUN}}/chain;
         then LC_ALL=C comm -23 {{.RUN}}/changed.txt {{.RUN}}/applied.txt > {{.RUN}}/unlanded.txt; else : > {{.RUN}}/unlanded.txt; fi;
         cut -f1 {{.RUN}}/unlanded.txt | head -20 | while IFS= read -r p; do echo "::warning::listed upstream, never fetched: $p"; done
-      # A called task sees none of its caller's call vars, so the three a check reads are
-      # handed on; in a run they are the values above, and an offline check passes its own.
+      # A task does not see the call vars of the task that starts it. Thus, smoke gives
+      # the three vars that a check reads. In a run, they are the values that smoke has.
+      # An offline check gives different values.
       - {task: fresh, vars: {RUN: '{{.RUN}}', URL: '{{.URL}}'}}
       - {task: smoke-mirror, vars: {RUN: '{{.RUN}}', STAGING: '{{.STAGING}}', URL: '{{.URL}}'}}
 
   fresh:
     desc: With FRESH_KEY set and in the state, read it through the domain and fail the run when the upstream clock in it is FRESH_HOURS (24) old; a source that stalls otherwise leaves every run green
     cmds:
-      # The run moved every byte it was given, so only the clock upstream wrote says the
-      # bytes are old. gnu reads a secondary, which can stop syncing while answering rsync.
+      # The run moved each byte that it got. Thus, only the clock that upstream wrote can
+      # show that the bytes are expired. gnu reads a secondary, which can stop its sync
+      # while its rsync daemon continues to operate.
       - >-
         {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
         if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
@@ -817,11 +960,11 @@ tasks:
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && echo "$(gb {{.RUN}}/bucket.txt) GB in $(n {{.RUN}}/bucket.txt) objects (reconciled)" || echo "not measured this run"){{if .CEILING_GB}} of the {{.CEILING_GB}} GB ceiling{{end}} |
         EOF
-      # prepare made RUN/tl, so the delta touched the signed subtree.
+      # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # With INDEX set, what index drew and removed.
+      # With INDEX set, the pages that index made and the keys that it removed.
       - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn under both keys, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # Rows that appear only when they have something to say.
+      # Rows that show only when they have data.
       - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
@@ -830,7 +973,7 @@ tasks:
     cmds:
       - |
         for i in 1 2 3 4 5; do
-          rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
+          rc=0; ( {{.CMD}} ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
           case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
           test $i -lt 5 || break
           s=$(({{.RETRY_S}} * 2 ** i + RANDOM % (2 * {{.RETRY_S}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
