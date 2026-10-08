@@ -552,7 +552,7 @@ tasks:
       D: '{{if .D}}{{.D}}{{else}}{{.RUN}}/deleted.txt{{end}}'
     # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
     # still name these containers, so they go only in the hour every batch has landed.
-    status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
+    status: ['test ! -s {{.D}} || test -f {{.RUN}}/chain']
     cmds:
       - {task: remove, vars: {K: '{{.D}}'}}
       - {task: checkpoint, vars: {B: '{{.D}}'}}
@@ -562,7 +562,7 @@ tasks:
     # Not while a batch waits for a later run: delete would hold the orphans back, so the run
     # stays due and the chained run that lands the last batch reconciles. A run that fails
     # before the last line records nothing either, so the next run is due too.
-    status: ['test ! -f {{.RUN}}/reconcile || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}}']
+    status: ['test ! -f {{.RUN}}/reconcile || test -f {{.RUN}}/chain']
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
@@ -712,7 +712,7 @@ tasks:
       # MAX_BATCHES has not published this hour's copy yet and has nothing to compare.
       - >-
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
-        test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.BATCHES_MAX}} ||
+        test -f {{.RUN}}/chain ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
       # One page this run redrew, read back under both of its keys by key (no zone rule
       # needed) and sized against the copy still in staging, the same one-byte ranged read as
@@ -764,7 +764,7 @@ tasks:
       # been worked, the delta lines the state still lacks are those: report counts them,
       # and each of the first 20 is a warning on the Actions run.
       - >-
-        if test -f {{.RUN}}/changed.txt && test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -le {{.BATCHES_MAX}};
+        if test -f {{.RUN}}/changed.txt && test ! -f {{.RUN}}/chain;
         then LC_ALL=C comm -23 {{.RUN}}/changed.txt {{.RUN}}/applied.txt > {{.RUN}}/unlanded.txt; else : > {{.RUN}}/unlanded.txt; fi;
         cut -f1 {{.RUN}}/unlanded.txt | head -20 | while IFS= read -r p; do echo "::warning::listed upstream, never fetched: $p"; done
       # A called task sees none of its caller's call vars, so the three a check reads are
