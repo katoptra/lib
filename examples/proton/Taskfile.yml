@@ -18,12 +18,17 @@ includes:
   proton:
     taskfile: ../../engines/proton.yml
     flatten: true
-    excludes: [stage]
+    excludes: [stage, prune]
 tasks:
   stage:
     desc: One file in one folder under STAGING, so the pipeline has something to upload
     cmds:
       - rm -rf {{.STAGING}} && mkdir -p {{.STAGING}}/example && printf 'hello\n' > {{.STAGING}}/example/hello.txt
+  prune:
+    desc: List the folder stage fills and trash nothing, since stage always writes the same file; two commands, so the render covers list-folder and trash
+    cmds:
+      - {task: list-folder, vars: {FOLDER: '$MIRROR_PROTON_DESTINATION/example', OUT: '{{.RUN}}/example.json'}}
+      - {task: trash, vars: {PATHS: ''}}
   tools:
     desc: Every tool the proton image promises, by version
     cmds:

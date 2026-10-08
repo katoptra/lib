@@ -96,4 +96,44 @@ print("confirm: " + verdict)
 sys.exit(0 if ok else 1)
 PY
 
+task: [pd] rc=0; PROTON_DRIVE_CACHE_DIR=/work/examples/proton/.run/session proton-drive filesystem list -j "$MIRROR_PROTON_DESTINATION/example" > /work/examples/proton/.run/example.json || echo "[]" > /work/examples/proton/.run/example.json 2> /work/examples/proton/.run/pd.err || rc=$?; echo $rc > /work/examples/proton/.run/pd.rc
+task: [session-push] echo "session: token rotated, sealing it back to the bucket"
+task: [seal] mkdir -p /work/examples/proton/.run && tar -cf /work/examples/proton/.run/session.tar -C /work/examples/proton/.run/session auth-session.json clientUid.json
+task: [age] test -n "$MIRROR_AGE_IDENTITY" || { echo "MIRROR_AGE_IDENTITY is unset" >&2; exit 1; }
+k=/work/examples/proton/.run/age.key; mkdir -p /work/examples/proton/.run; install -m 600 /dev/null "$k" && printf '%s\n' "$MIRROR_AGE_IDENTITY" > "$k"
+rc=0
+case encrypt in
+  encrypt) age -r "$(age-keygen -y "$k")" -o /work/examples/proton/.run/session.tar.age /work/examples/proton/.run/session.tar || rc=$? ;;
+  decrypt) age -d -i "$k" -o /work/examples/proton/.run/session.tar.age /work/examples/proton/.run/session.tar || rc=$? ;;
+  *) echo "age: MODE must be encrypt or decrypt" >&2; rc=2 ;;
+esac
+rm -f "$k"; exit $rc
+
+task: [push] s3 put /work/examples/proton/.run/session.tar.age .state/session.tar.age
+task: [seal] rm -f /work/examples/proton/.run/session.tar /work/examples/proton/.run/session.tar.age
+task: [session-push] sha256sum /work/examples/proton/.run/session/auth-session.json > /work/examples/proton/.run/session.sha
+task: [pd] rc=$(cat /work/examples/proton/.run/pd.rc)
+case " 0 " in *" $rc "*) exit 0 ;; esac
+echo "proton-drive exited $rc; its stderr, $(wc -l < /work/examples/proton/.run/pd.err) lines, is in .run/pd.err" >&2; exit $rc
+
+task: [pd] rc=0; PROTON_DRIVE_CACHE_DIR=/work/examples/proton/.run/session proton-drive filesystem trash  2> /work/examples/proton/.run/pd.err || rc=$?; echo $rc > /work/examples/proton/.run/pd.rc
+task: [session-push] echo "session: token rotated, sealing it back to the bucket"
+task: [seal] mkdir -p /work/examples/proton/.run && tar -cf /work/examples/proton/.run/session.tar -C /work/examples/proton/.run/session auth-session.json clientUid.json
+task: [age] test -n "$MIRROR_AGE_IDENTITY" || { echo "MIRROR_AGE_IDENTITY is unset" >&2; exit 1; }
+k=/work/examples/proton/.run/age.key; mkdir -p /work/examples/proton/.run; install -m 600 /dev/null "$k" && printf '%s\n' "$MIRROR_AGE_IDENTITY" > "$k"
+rc=0
+case encrypt in
+  encrypt) age -r "$(age-keygen -y "$k")" -o /work/examples/proton/.run/session.tar.age /work/examples/proton/.run/session.tar || rc=$? ;;
+  decrypt) age -d -i "$k" -o /work/examples/proton/.run/session.tar.age /work/examples/proton/.run/session.tar || rc=$? ;;
+  *) echo "age: MODE must be encrypt or decrypt" >&2; rc=2 ;;
+esac
+rm -f "$k"; exit $rc
+
+task: [push] s3 put /work/examples/proton/.run/session.tar.age .state/session.tar.age
+task: [seal] rm -f /work/examples/proton/.run/session.tar /work/examples/proton/.run/session.tar.age
+task: [session-push] sha256sum /work/examples/proton/.run/session/auth-session.json > /work/examples/proton/.run/session.sha
+task: [pd] rc=$(cat /work/examples/proton/.run/pd.rc)
+case " 0 " in *" $rc "*) exit 0 ;; esac
+echo "proton-drive exited $rc; its stderr, $(wc -l < /work/examples/proton/.run/pd.err) lines, is in .run/pd.err" >&2; exit $rc
+
 task: [ping] test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
