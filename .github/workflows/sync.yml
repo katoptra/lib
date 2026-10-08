@@ -1,9 +1,11 @@
-# Reusable: one mirror, one run. The caller is a workflow_dispatch of a few lines that
-# an external scheduler triggers; it passes `vars` through and inherits its repository secrets.
-# 1Password is read once per run: one `op run` resolves op.env around the whole pipeline,
-# failure path included. A mirror without an op.env runs on its repository secrets instead,
-# exported into the sync step's environment and crossing into the container by the names
-# its PASS var lists.
+# A reusable workflow: one mirror, one run. The caller is a short workflow_dispatch
+# workflow that an external scheduler starts. The caller gives `vars` to this workflow,
+# and this workflow gets the secrets of the caller.
+#
+# A run reads 1Password one time: one `op run` gets the values of op.env for the full
+# pipeline, with the failure path. A mirror without an op.env uses the secrets of the
+# caller. The sync step exports them into its environment, and they go into the container
+# with the names that its PASS var lists.
 name: sync
 on:
   workflow_call:
@@ -30,18 +32,20 @@ jobs:
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # This repository at the commit the caller pinned this workflow to, so the toolbox
-      # action and the lock it reads are the release the workflow is: one pin, not two.
+      # This repository at the commit to which the caller pinned this workflow. Thus, the
+      # toolbox action and the lock that it reads are of the same release as the workflow:
+      # one pin, not two.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {repository: katoptra/lib, ref: '${{ github.job_workflow_sha }}', path: .lib}
       - uses: ./.lib/.github/actions/toolbox
-        with: {op: "${{ hashFiles('op.env') != '' }}"}   # a mirror without an op.env never calls op
-      # df is the host's: the image and the batches share the runner's disk.
+        with: {op: "${{ hashFiles('op.env') != '' }}"}   # a mirror without an op.env does not use op
+      # This df is on the host, because the image and the batches use the same disk of the
+      # runner.
       - run: df -h . && task image
-      # The shell splits vars into words and each becomes a go-task variable, which the
-      # engine may splice into a command. A word that is not a bare key and a plain value
-      # is refused here, in a step that holds no secrets, so a rejected input never reaches
-      # the one below.
+      # The shell divides vars into words, and each word becomes a go-task variable. The
+      # engine can put such a variable into a command. This step rejects each word that is
+      # not KEY=value, with only safe characters in the key and the value. This step holds
+      # no secrets. Thus, a rejected input does not go to the next step.
       - name: The vars input is KEY=value pairs and nothing else
         env:
           VARS: ${{ inputs.vars }}
@@ -51,16 +55,20 @@ jobs:
         env:
           SECRETS: ${{ toJSON(secrets) }}
           VARS: ${{ inputs.vars }}
-        # Every inherited secret becomes an environment variable of this step, by name, in
-        # memory: no file, no command line, and GitHub masks the values in the log. With an
-        # op.env the pipeline reads 1Password and these are unused. VARS is data the shell
-        # splits into words, never an expression spliced into the script.
+        # Each inherited secret becomes an environment variable of this step, with its
+        # name, in memory. There is no file and no command line, and GitHub shows *** in
+        # the log for each value. With an op.env, the pipeline reads 1Password, and it
+        # does not use these variables. VARS is data that the shell divides into words. It
+        # is not an expression in the script.
         run: |
           eval "$(printf '%s' "$SECRETS" | jq -r 'to_entries[] | "export \(.key)=\(.value | @sh)"')"
           task sync -- $VARS
-      # The pipeline's own failure path runs inside its container, so a run the runner cut
-      # off (the timeout, a cancellation, an image that never pulled) reported and pinged
-      # nothing. This is that path from outside. An ordinary failure has already run it.
+      # The failure path of the pipeline operates in its container. Thus, when the runner
+      # stops a run, the pipeline does not report and does not send a ping. The runner
+      # stops a run after the timeout, after a cancellation, or when the image pull does
+      # not complete. This step is that path, from a location that is not in the
+      # container. After a usual failure, the pipeline does the failure path, and this
+      # step does not operate.
       - name: The run was cut off
         if: always() && steps.sync.outcome != 'success' && steps.sync.outcome != 'failure'
         env:
@@ -70,7 +78,8 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        # The caller's own file name, whatever it is, cut from GITHUB_WORKFLOW_REF by chain-file.sh.
+        # chain-file.sh gets the file name of the caller from GITHUB_WORKFLOW_REF. Each
+        # mirror can use a different name.
         run: |
           if [ -f .run/chain ]; then
             gh workflow run "$(sh .lib/.github/chain-file.sh "$GITHUB_WORKFLOW_REF")" --ref "$GITHUB_REF_NAME"
