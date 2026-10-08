@@ -260,8 +260,6 @@ next run:
 - An rsync run has batches that wait for a subsequent run. Its reconcile waits for the
   chained run that uploads the last batch.
 
-A mirror with no engine that does a reconcile writes `pull` and `push` in its Taskfile.
-
 ### The parts that a mirror supplies
 
 | Name | Type | Function |
@@ -276,7 +274,7 @@ A mirror with no engine that does a reconcile writes `pull` and `push` in its Ta
 | `report-mirror` | Task | The rows of the mirror in the run summary. The mirror puts it in `excludes:` on the toolbox include |
 | `LIB_DIR` | Include var | The location where `image-build` finds `docker/`. The default is `../lib` |
 | `RECONCILE_HOURS` | Root var | The hours between two reconciles, if not 24. Refer to [Reconcile, by age](#reconcile-by-age) |
-| `pull`, `push` | Tasks | The tasks that `due` and `reconciled` use to read and write `.state/reconciled`. An engine supplies the two tasks. A mirror with no engine that does a reconcile writes them |
+| `pull`, `push` | Tasks | The tasks that `due` and `reconciled` use to read and write `.state/reconciled`. An engine supplies the two tasks |
 | `excludes:` | Include key | The verbs of lib that the mirror overrides. Refer to [Changing it](#changing-it) |
 
 ## The engines
@@ -759,10 +757,13 @@ Obey these three rules:
 
 ### A pipeline of a mirror
 
-A mirror that uses a program for its work includes only the toolbox. It writes `pipeline`
-and `plan-pipeline` from the `clock`, `report` and `ping` of the toolbox, and the steps of
-its program. dropbox has this shape:
+A mirror that uses a program for its work writes `pipeline` and `plan-pipeline` in its
+Taskfile. Their steps are the `clock`, `report` and `ping` of the toolbox, and the steps of
+the program. The mirror puts these two verbs in `excludes:` on the engine include. dropbox
+has this shape:
 
+- It includes the proton engine, which supplies `session`, `session-seal`, `empty-trash`,
+  `pull` and `push`.
 - Each step is one `python -m migrator <command>`.
 - The Taskfile sets the sequence of the steps.
 - The Python makes each decision, but the `due` of the toolbox sets when to do a reconcile.
@@ -1010,7 +1011,7 @@ flowchart LR
   rel --> tag["the git tag vX, moved"]
   tag --> gr["the GitHub release vX.Y.Z"]
   tag --> inc["mirrors include toolbox.yml and an engine at v2"]
-  ghcr --> img["engines, and mirrors with no engine, name IMAGE at -v2"]
+  ghcr --> img["engines name IMAGE at -v2"]
 ```
 
 There are two types of pin, with one policy:
@@ -1167,25 +1168,6 @@ tasks:
 Its `op.env` has the seven names in [The proton engine](#the-proton-engine),
 `HEALTHCHECK_URL`, and the names that only this mirror uses. The engine supplies the
 `IMAGE`, `ghcr.io/katoptra/toolbox:proton-v2`.
-
-### A toolbox-only mirror
-
-```yaml
-version: '3'
-includes:
-  toolbox:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
-    flatten: true
-    excludes: [report-mirror]
-    vars: {NAME: dropbox, DESC: nightly Dropbox -> Proton Drive mirror, IMAGE: ghcr.io/katoptra/toolbox:proton-v2, PASS: MIRROR_VERBOSE}
-tasks:
-  pipeline:
-    cmds: [{task: clock}, {task: session}, {task: state}, '# the mirror's own steps', {task: report}, {task: ping}]
-  plan-pipeline:
-    cmds: [{task: clock}, {task: session}, {task: state}, '# the read-only steps']
-  report-engine: {cmds: []}   # no engine, so no engine rows
-  report-mirror: {cmds: ['# cat the mirror's own report onto the job page']}
-```
 
 ### The other files
 
