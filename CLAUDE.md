@@ -67,8 +67,8 @@ Read that section before you write.
   mirror pins the two reusable workflows in this method. Each reusable workflow does a
   checkout of this repository at the commit of the workflow (`github.job_workflow_sha`) for
   the toolbox action and `toolchain.lock.toml`. Thus, the pin of the workflow is the only
-  pin. The URLs in `includes:` and the image use the git tag `v2`, and the tag moves. When
-  that tag moves, all mirrors get the release.
+  pin. The URLs in `includes:` use the git tag `v2`, and the image uses the tag
+  `<variant>-v2`. The two tags move. When they move, all mirrors get the release.
 - Give `-r` to each `xargs` if a filter can make its input empty. GNU `xargs` runs its
   command one time on empty input. A guard on the file that a pipe reads is not a guard on
   the input of `xargs`. For example, the `SLASH` awk of `pages` removes the root, which has
@@ -132,9 +132,9 @@ Make the tree again, with a new key, only to change its shape. There is no copy 
 private half of the test key.
 
 The proton check runs `confirm` on `examples/proton/fixtures/`: an upload summary that it
-accepts and one that it rejects. It also encrypts and decrypts a file with the `age` verb
-and a test identity. Then it does a dry run of `empty-trash-pipeline` from the command
-line.
+accepts and one that it rejects. Then it does a dry run of `empty-trash-pipeline` from the
+command line. Last, it encrypts and decrypts a file with the `age` verb and a test
+identity.
 
 `task check` does not examine a change to `README.md`. For that change, the review is the check.
 Seven repositories link to headings of `README.md`: ctan, dropbox, github, gnu, nongnu, site

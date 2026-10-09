@@ -428,8 +428,8 @@ that gives its name. `delete` waits for the run that uploads the last batch. The
 results:
 
 - The tlpdb that clients read does not give the name of a container that `delete` removed.
-- If `tlmgr` runs while the engine publishes a batch, it gets the tlpdb of the last run. It
-  does not get a tlpdb that gives a file that is not in the bucket.
+- If `tlmgr` runs while the engine publishes a batch, it gets the last tlpdb. It does
+  not get a tlpdb that gives a file that is not in the bucket.
 
 #### A signed subtree
 
@@ -617,7 +617,7 @@ the work. On a laptop,
 | `smoke`: the canary | The domain served bytes that are not the bytes in the bucket, or it rejected a Perl client. A zone rule is missing, or the scope of a zone rule became wider. The bucket is correct | Examine the Configuration Rule of the zone. Refer to [The parts of a bucket](#the-parts-of-a-bucket) |
 | `smoke`: the Content-Encoding | A `.tar.gz` had a `Content-Encoding` when `smoke` read it. Clients then decompress it while they download it | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Refer to [Content types](#content-types) |
 | `smoke`: the type or the length | A key of the sample had a Content-Type that is not its label, or a length that is not its length in the listing. The CLI, R2 or the zone changed the object | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Then examine the rules of the zone |
-| `fresh`: the clock stopped | The clock in the `FRESH_KEY` file did not change for more than `FRESH_HOURS`. Upstream stopped, or the mirror that `SOURCE` gives stopped. A secondary mirror can stop, and rsync can continue to connect to it. The run copied all the bytes that it got | Examine upstream. If `SOURCE` is a secondary mirror, set `SOURCE` to a different secondary mirror. If upstream stopped, no change in the mirror is necessary |
+| `fresh`: the clock stopped | The clock in the `FRESH_KEY` file did not change for more than `FRESH_HOURS`. Upstream stopped, or the mirror that `SOURCE` gives stopped. A secondary mirror can stop its sync, and rsync can continue to connect to it. The run copied all the bytes that it got | Examine upstream. If `SOURCE` is a secondary mirror, set `SOURCE` to a different secondary mirror. If upstream stopped, no change in the mirror is necessary |
 
 These procedures repair other problems:
 
@@ -657,9 +657,8 @@ These procedures repair other problems:
 - **Abort a multipart upload that did not complete.** Find the upload. Then abort it:
 
   ```sh
-  aws s3api list-multipart-uploads --bucket <BUCKET> --query
-  'Uploads[].[Key,UploadId,Initiated]' --output text aws s3api abort-multipart-upload
-  --bucket <BUCKET> --key <key> --upload-id <id>
+  aws s3api list-multipart-uploads --bucket <BUCKET> --query 'Uploads[].[Key,UploadId,Initiated]' --output text
+  aws s3api abort-multipart-upload --bucket <BUCKET> --key <key> --upload-id <id>
   ```
 
   This procedure is safe, and it has no cost. If you do not do it, R2 aborts the upload
@@ -989,15 +988,16 @@ On a public repository, the logs of a run are public. A pipeline writes counts a
 lines in the log. It does not write a credential or an account identifier there. The output
 of `op run` does not show the values that it got.
 
-The data of a proton mirror is private. Thus, the proton engine also does not write a path
-name in the log:
+The data of a proton mirror is private. Thus, the proton engine also does not write the path
+of an item in the log:
 
 - The stderr of git and of the CLI goes to files in `.run/`. But the stderr of
   `list-folder` goes to the log.
 - A failure gives the position of an item in the listing, not its name.
 
-The `trash` verb of the proton engine is different. The log shows the command of `trash`,
-with each path that `trash` moves to the trash.
+The `list-folder` and `trash` verbs of the proton engine are different. The log shows the
+command of each verb, with the folder that `list-folder` reads and each path that `trash`
+moves to the trash.
 
 The data of an rsync mirror is public. The rsync engine writes the paths of public files in
 the log, for example in `smoke` and `fresh`.
@@ -1038,7 +1038,7 @@ reject.
 flowchart LR
   lock["toolchain.lock.toml<br/>versions, checksums, one key fingerprint"] --> df["docker/rsync.Dockerfile<br/>docker/proton.Dockerfile"]
   lock --> act[".github/actions/toolbox<br/>task and op on the runner"]
-  df --> ci["ci.yml, every pull request<br/>build, tools, check, offline, per variant"]
+  df --> ci["ci.yml, every pull request and push to main<br/>build, tools, check, offline, per variant"]
   df --> rel["release.yml, on a tag vX.Y.Z"]
   rel --> ghcr["ghcr.io/katoptra/toolbox:variant-vX.Y.Z<br/>and :variant-vX, amd64 and arm64"]
   rel --> tag["the git tag vX, moved"]
@@ -1049,8 +1049,9 @@ flowchart LR
 
 There are two types of pin, with one policy:
 
-- The URLs in `includes:` and the image use the git tag `v2`, and the tag moves. When it
-  moves, a change to a verb or a tool goes into each mirror at its next run.
+- The URLs in `includes:` use the git tag `v2`, and the image uses the tag `<variant>-v2`.
+  The two tags move. When they move, a change to a verb or a tool goes into each mirror at its
+  next run.
 - Each mirror pins each `uses:` of a lib workflow to the commit of a release, and
   Dependabot updates it. The repositories of the four public mirrors have an Actions
   policy: each `uses:` must have a full SHA. The other repositories pin each `uses:` with
@@ -1323,8 +1324,7 @@ Make each change to the transport of bytes, or to the checks on a tree, in the e
 Then all mirrors get it. If two mirrors can copy a verb, put the verb in the engine. Obey
 these rules:
 
-- A new hook is an empty task, with a `desc` that gives the mirror or the engine that fills
-  it. The verb that runs the hook gives it the vars that it uses.
+- A new hook is an empty task, with a `desc` that gives the mirror that fills it. The verb that runs the hook gives it the vars that it uses.
 - A new var that a mirror can set is an inline `{{.X | default N}}` in the command that
   reads it. Write the default one time. Add a row to the table in [The vars](#the-vars).
 - A change to a verb is a change to `examples/<variant>/render.txt`. The diff of that file
@@ -1407,9 +1407,9 @@ For rsync, `offline` does these checks:
 - `fresh` with three clocks: two that it accepts, and one from 48 hours before the check.
 
 For proton, `offline` runs `confirm` on two upload summaries: one that it accepts and one
-that it rejects. It also encrypts and decrypts one file with `age`. Then it does a dry run
-of `empty-trash-pipeline` from the command line, because `empty-trash` starts that task from
-the command line in the image.
+that it rejects. Then it does a dry run of `empty-trash-pipeline` from the command line,
+because `empty-trash` starts that task from the command line in the image. Last, it
+encrypts and decrypts one file with `age`.
 
 CI runs the same four steps for each variant on each pull request and on each push to
 `main`. It also runs the test
