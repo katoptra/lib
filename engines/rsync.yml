@@ -928,8 +928,8 @@ tasks:
     desc: With FRESH_KEY set and in the state, read it through the domain and fail the run when the upstream clock in it is FRESH_HOURS (24) old; a source that stalls otherwise leaves every run green
     cmds:
       # The run moved each byte that it got. Thus, only the clock that upstream wrote can
-      # show that the bytes are expired. gnu reads a secondary, which can stop its sync
-      # while its rsync daemon continues to operate.
+      # show that the bytes are expired. Upstream can stop. A secondary mirror can stop its
+      # sync while its rsync daemon continues to operate.
       - >-
         {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
         if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
