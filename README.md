@@ -131,7 +131,7 @@ sequenceDiagram
   else the runner cut the run off
     W->>C: task op -- task failed
   else .run/chain exists
-    W->>W: gh workflow run, the caller's own file: the next run
+    W->>W: gh workflow run, the workflow file of the caller: the next run
   end
 ```
 
@@ -1046,9 +1046,10 @@ There are two types of pin, with one policy:
 
 - The URLs in `includes:` and the image use the git tag `v2`, and the tag moves. When it
   moves, a change to a verb or a tool goes into each mirror at its next run.
-- Each mirror pins its workflow calls to the commit of a release, and Dependabot updates
-  them. The repositories of the four public mirrors have an Actions policy: each `uses:`
-  must have a full SHA. The other repositories pin their calls with the same method.
+- Each mirror pins each `uses:` of a lib workflow to the commit of a release, and
+  Dependabot updates it. The repositories of the four public mirrors have an Actions
+  policy: each `uses:` must have a full SHA. The other repositories pin each `uses:` with
+  the same method.
 
 A change that breaks the name or the contract of a verb is a new major version.
 
@@ -1065,12 +1066,12 @@ This workflow does one run of one mirror. The caller is a `workflow_dispatch` th
 
 ```mermaid
 flowchart TB
-  a["checkout the mirror"] --> b["checkout katoptra/lib at this workflow's own commit, into .lib<br/>so the action and the lock are the release the workflow is"]
+  a["checkout the mirror"] --> b["checkout katoptra/lib at the commit of this workflow, into .lib<br/>so the action and the lock are the release the workflow is"]
   b --> c["toolbox action: install task, and op if op.env exists, from the lock"]
   c --> d["task image"] --> e["validate-vars.sh: vars is KEY=value pairs and nothing else"]
   e --> f["task sync -- VARS<br/>every inherited secret exported by name, in memory"]
   f -- "cut off: the timeout, a cancellation" --> g["task op -- task failed"]
-  f -- "success, and .run/chain exists" --> h["gh workflow run, the caller's own file"]
+  f -- "success, and .run/chain exists" --> h["gh workflow run, the workflow file of the caller"]
 ```
 
 - **Inputs.** `vars` is a string of `KEY=value` pairs for the pipeline in the image.
