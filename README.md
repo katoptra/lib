@@ -986,16 +986,21 @@ Actions run list of each mirror when a person opens the page. Thus, each tile sh
 status and the last sync time at the time that a person opens the page.
 
 On a public repository, the logs of a run are public. A pipeline writes counts and phase
-lines in the log. It does not write a path name, a credential or an account identifier
-there:
+lines in the log. It does not write a credential or an account identifier there. The output
+of `op run` does not show the values that it got.
 
-- The output of `op run` does not show the values that it got.
+The data of a proton mirror is private. Thus, the proton engine also does not write a path
+name in the log:
+
 - The stderr of git and of the CLI goes to files in `.run/`. But the stderr of
   `list-folder` goes to the log.
 - A failure gives the position of an item in the listing, not its name.
 
 The `trash` verb of the proton engine is different. The log shows the command of `trash`,
 with each path that `trash` moves to the trash.
+
+The data of an rsync mirror is public. The rsync engine writes the paths of public files in
+the log, for example in `smoke` and `fresh`.
 
 ## The images
 
@@ -1452,8 +1457,8 @@ work that you do one time, manually. No repository does these steps.
    9. Make its healthcheck. Put the URL of the healthcheck in the vault item.
 6. **A trigger for the runs.** Add a `schedule:` trigger to the `sync.yml` of the mirror,
    or use an external scheduler. GitHub disables a scheduled workflow in a public
-   repository that has no commit, issue or pull request for 60 days. Thus, an external
-   scheduler dispatches the katoptra mirrors.
+   repository that has no activity for 60 days. Thus, an external scheduler dispatches the
+   katoptra mirrors.
 7. **The site.** This step is optional. Fork katoptra/site. Add one entry for each mirror
    in `data/mirrors.toml`. Deploy the site on a static host.
 
