@@ -58,7 +58,7 @@ Read that section before you write.
 - The built-in shell of task has no `umask`. To make a file with the mode 0600, use
   `install -m 600 /dev/null "$f"`. Then write the file. The `age` verb of the proton engine
   does this.
-- Each Proton CLI call runs in `pd`. After each call, with all exit codes, `pd`
+- `pd` runs each command of the Proton CLI. After each command, with all exit codes, `pd`
   examines the session, and it writes the session back to the bucket if the refresh token
   changed. The token changes each time that the CLI uses the session. If a run keeps a
   changed token and does not write it back, Proton rejects the token of the next run. A new
