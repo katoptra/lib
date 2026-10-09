@@ -39,7 +39,7 @@ that, you can read each section without the other sections.
 ```mermaid
 flowchart LR
   subgraph up["Upstreams"]
-    u1["CTAN, GNU and Savannah, over rsync"]
+    u1["Trees over rsync, for example CTAN and GNU"]
     u2["GitHub, over the API and git"]
     u3["Dropbox, over the API"]
   end
@@ -60,10 +60,10 @@ flowchart LR
 Each mirror has the structure of this diagram, with one upstream and one sink. There are two
 types of mirror:
 
-- A public mirror (ctan, tlnet, gnu, gnu-alpha and nongnu) copies an rsync tree into a
-  bucket, and a domain serves the bucket. The bucket is the mirror.
-- A private mirror (github and dropbox) copies an account into Proton Drive. Its bucket
-  contains only the data that the next run uses.
+- A public mirror copies an rsync tree into a bucket, and a domain serves the bucket. The
+  bucket is the mirror.
+- A private mirror copies an account into Proton Drive. Its bucket contains only the data
+  that the next run uses.
 
 The two types of mirror do a run with the same steps:
 
@@ -924,10 +924,10 @@ A full CTAN mirror is approximately 140 GB: approximately $2.10 a month, at $0.0
 GB-month.
 
 R2 has a free tier for each account, not for each bucket. The free tier is 10 GB-month of
-storage, 1 million Class A operations and 10 million Class B operations each month. All seven
-buckets are in one account, and ctan, gnu and nongnu use all of the free tier. Thus, each
-README gives gross costs: storage only, at $0.015 for each GB-month, with no free tier
-subtracted.
+storage, 1 million Class A operations and 10 million Class B operations each month. All the
+buckets of katoptra are in one account, and the largest mirrors use all of the free tier.
+Thus, each README gives gross costs: storage only, at $0.015 for each GB-month, with no free
+tier subtracted.
 
 The engines use these facts about R2:
 
@@ -1009,8 +1009,8 @@ from GHCR. A run does not build an image, and it does not use Docker Hub.
 
 | Variant | Base | Tools | For |
 |---|---|---|---|
-| `rsync` | ubuntu 24.04 | rsync, gpgv, xz, curl, perl (shasum), go-task, AWS CLI v2 with only s3 and sts | rsync upstreams into a bucket: ctan, tlnet, gnu, gnu-alpha, nongnu |
-| `proton` | python 3.13 slim | proton-drive, age, git, go-task, boto3, requests, pytest, ruff, and `s3`, a boto3 script that gets and puts objects | Proton Drive sinks: github with the proton engine, dropbox with its Python |
+| `rsync` | ubuntu 24.04 | rsync, gpgv, xz, curl, perl (shasum), go-task, AWS CLI v2 with only s3 and sts | rsync upstreams into a bucket |
+| `proton` | python 3.13 slim | proton-drive, age, git, go-task, boto3, requests, pytest, ruff, and `s3`, a boto3 script that gets and puts objects | Proton Drive sinks, with the proton engine or with the Python of the mirror |
 
 The two images have these properties:
 
@@ -1053,7 +1053,7 @@ There are two types of pin, with one policy:
   The two tags move. When they move, a change to a verb or a tool goes into each mirror at its
   next run.
 - Each mirror pins each `uses:` of a lib workflow to the commit of a release, and
-  Dependabot updates it. The repositories of the five public mirrors have an Actions
+  Dependabot updates it. The repositories of the public mirrors have an Actions
   policy: each `uses:` must have a full SHA. The other repositories pin each `uses:` with
   the same method.
 
