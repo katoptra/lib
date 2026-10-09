@@ -137,9 +137,9 @@ command line. Last, it encrypts and decrypts a file with the `age` verb and a te
 identity.
 
 `task check` does not examine a change to `README.md`. For that change, the review is the check.
-Seven repositories link to headings of `README.md`: ctan, dropbox, github, gnu, nongnu, site
-and tlnet. Do not change the text of these headings. If you change it, the links from
-these repositories cannot find them:
+Eight repositories link to headings of `README.md`: ctan, dropbox, github, gnu, gnu-alpha, nongnu,
+site and tlnet. Do not change the text of these headings. If you change it, the links from these
+repositories cannot find them:
 
 - `#secrets`
 - `#storage`

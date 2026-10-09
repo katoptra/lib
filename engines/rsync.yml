@@ -322,7 +322,7 @@ tasks:
       # rejects a vars input that validate-vars.sh does not accept. Ceiling: a different
       # caller that gives text that is not safe to `task sync --`. Upgrade path: make sure
       # here that the value is a number. Then do `task render-update` in lib and in each
-      # rsync mirror (ctan, tlnet, gnu and nongnu). The render.txt of each records this
+      # rsync mirror (ctan, tlnet, gnu, gnu-alpha and nongnu). The render.txt of each records this
       # line.
       - >-
         awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
