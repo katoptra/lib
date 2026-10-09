@@ -1,82 +1,154 @@
 # lib
 
-The toolbox every katoptra mirror includes by URL. `README.md` is the manual: the layers,
-the verbs, the engines, secrets, storage, the images, the workflows, and how a mirror
-uses and changes any of it. This file is what a change must not break: each entry is a
-verified go-task or platform fact that cost a session to find.
+This repository is the toolbox that all katoptra mirrors include from a URL. `README.md` is
+the manual. It has sections about these parts of the system:
+
+- The layers, the verbs and the engines
+- The secrets and the storage
+- The images and the workflows.
+
+It also tells how a mirror uses these parts and how a mirror changes them. This file gives
+the items that a change must not break. Each item is a verified fact about go-task or a
+platform. One session was necessary to find each fact.
+
+Writing: obey ASD-STE100 and the rules in the
+[Writing section of the org CONTRIBUTING](https://github.com/katoptra/.github/blob/main/CONTRIBUTING.md#writing).
+Read that section before you write.
 
 ## Hazards
 
-- A global var that reads another var is rendered once, from the root's and the command
-  line's values, never from a call var: `GPGCHECK` takes the fingerprint as an awk `-v`
-  at each use, where a call var `TL_KEY` is visible.
-- A var of another name that reads a tunable, `BATCHES_MAX` from `MAX_BATCHES`, still
-  sees the command line (verified), so each default is spelled once, inline.
-- No `dir:` on an engine verb. In a flattened include read by path, task joins even an
-  absolute `dir:` onto the include's directory (verified, 3.53.1), so `verify` starts
-  each command with `cd {{.STAGING}}` instead.
-- `.taskrc.yml` keys are `trusted-hosts` and `cache-expiry`; task ignores a key it does
-  not know, silently, and refetches on every invocation.
-- Every tool in an image comes from `toolchain.lock.toml`, read through `docker/lock.py`,
-  the one reader the Dockerfiles and the toolbox action share, and every one is checked
-  before it is used. Most carry a recorded sha256. The AWS CLI zip carries none, because
-  upstream publishes a detached PGP signature instead, so the fetch stage verifies that
-  signature against `docker/aws-cli.pub` and requires the fingerprint the lock pins,
-  through the same GOODSIG-and-VALIDSIG awk gate the engine uses for TeX Live.
-- Images set `TASK_REMOTE_OFFLINE=1`. Inside a run the include resolves from the
-  mirror's `.task/remote` cache, bind-mounted with the repo, never from the network.
-- `run` and `render` mount the repository's git top level at `/work` and set the working
-  directory to the Taskfile's subdirectory. For a mirror the two coincide; for the
-  examples here it is what makes `../../toolbox.yml` reachable.
-- `render` captures task's dry run from inside the container (`sh -c 'task ... 2>&1'`)
-  so the container engine's own progress lines never reach `render.txt`.
-- Inside a `sh:` var, `printf -- '-e %s'` prints dashes: task's built-in shell takes
-  the `--` as the format. Use `printf '%s %s ' -e "$v"`.
-- Task's built-in shell runs every command under `set -e`, and an assignment takes its
-  command substitution's exit: `x=$(cat missing)` stops the command (verified, 3.53.1).
-- Task's built-in shell keeps `set -e` inside a subshell whose status `||` reads:
-  `( false; echo on ) || echo caught` prints only `caught` (verified, 3.53.1), where bash
-  and dash print `on`. A guard meant to hold under either exits each step by hand.
-- Task's built-in shell has no `umask`. A file that must be born 0600 is
-  `install -m 600 /dev/null "$f"` and then written, as the proton engine's `age` does.
-- Every Proton CLI call goes through `pd`, which pushes the session back whatever the
-  exit: the refresh token rotates, and a run that kept a rotated token to itself leaves
-  the next run unable to log in. Two mirrors never share one session for the same reason.
-- Actions pinned to a full SHA with the version in a trailing comment. A mirror pins the
-  two reusable workflows that way; each checks this repository out at its own commit
-  (`github.job_workflow_sha`) for the toolbox action and the lock, so a workflow pin is
-  the one pin. The include and the image float at `v2` by design: moving that tag is
-  the rollout.
-- GNU `xargs` runs its command once on empty input. A guard on the file feeding a pipe is
-  not a guard on what reaches `xargs`: `pages`'s `SLASH` awk drops the root, which has no
-  slashless key, so a run whose only dirty directory is the root sends it nothing. Every
-  `xargs` whose input can be filtered down to nothing takes `-r`.
-- A `>-` folded block keeps the newline when a continuation line is indented further than
-  the lines around it. `pages`'s awk programs depend on that; a shell line meant to
-  continue ends with a backslash. `task check` shows what actually renders.
-- A macOS disk merges directories that differ only in case. Pages drawn on a laptop from a
-  real listing come out short wherever upstream has two such directories (CTAN has
-  `obsolete/support/TeXshell/` and `texshell/`). The runner is ext4 and draws both.
+- Do not read a call var in a global var. Task renders a global var that reads a different
+  var one time. It uses the values of the root and of the command line, and not a call
+  var. Thus, `GPGCHECK` gets the fingerprint as an awk `-v` in each command that uses it. In
+  that command, the call var `TL_KEY` is available.
+- Some vars have a different name and read a var that a mirror can set, for example
+  `BATCHES_MAX` from `MAX_BATCHES`. Such a var also gets the value on the command line
+  (verified). Thus, write each default one time, inline.
+- Do not put `dir:` on an engine verb. Task can read a flattened Taskfile of `includes:`
+  from a path. In that condition, it adds each `dir:`, also an absolute one, to the
+  directory of that Taskfile (verified, 3.53.1). Thus, `verify` starts each command with
+  `cd {{.STAGING}}`.
+- Use only the keys `trusted-hosts` and `cache-expiry` in `.taskrc.yml`. Task ignores a key
+  that it does not know, and it shows no warning. In that condition, it downloads the remote
+  Taskfiles again each time that it runs.
+- Each tool in an image is from `toolchain.lock.toml`. `docker/lock.py` reads that file
+  for the Dockerfiles and for the toolbox action, and the build examines each tool before
+  it uses it. Most tools have a recorded sha256. The AWS CLI zip has no sha256, because
+  upstream publishes only a detached PGP signature for it. Thus, the fetch stage verifies
+  that signature with `docker/aws-cli.pub`, and it must find the fingerprint that
+  `toolchain.lock.toml` pins. It uses the same GOODSIG and VALIDSIG awk check as the engine
+  uses for TeX Live.
+- The images set `TASK_REMOTE_OFFLINE=1`. In a run, task gets the included Taskfiles from
+  the `.task/remote` cache of the mirror. This cache goes into the container with the
+  repository (a bind mount). Task does not get the Taskfiles from the network.
+- `run` and `render` put the git top level of the repository at `/work` (a bind mount).
+  They set the working directory to the subdirectory of the Taskfile. For a mirror, the two
+  directories are the same. For the examples in this repository, this lets task find
+  `../../toolbox.yml`.
+- `render` gets the dry run of task in the container, with `sh -c 'task ... 2>&1'`. Thus,
+  the status lines of the container runtime do not go into `render.txt`.
+- In a `sh:` var, do not use `printf -- '-e %s'`. It prints dashes, because the built-in
+  shell of task reads the `--` as the format. Use `printf '%s %s ' -e "$v"`.
+- The built-in shell of task runs each command with `set -e`. An assignment gets the exit
+  of its command substitution: `x=$(cat missing)` stops the command (verified, 3.53.1).
+- The built-in shell of task keeps `set -e` in a subshell when `||` reads the status of
+  that subshell. `( false; echo on ) || echo caught` prints only `caught` (verified,
+  3.53.1), but bash and dash print `on`. For a guard that must operate in all these shells,
+  make each step exit manually.
+- The built-in shell of task has no `umask`. To make a file with the mode 0600, use
+  `install -m 600 /dev/null "$f"`. Then write the file. The `age` verb of the proton engine
+  does this.
+- `pd` runs each command of the Proton CLI. After each command, with all exit codes, `pd`
+  examines the session, and it writes the session back to the bucket if the refresh token
+  changed. The token changes each time that the CLI uses the session. If a run keeps a
+  changed token and does not write it back, Proton rejects the token of the next run. A new
+  login is then necessary. For the same cause, two mirrors do not use one session.
+- Pin each action to a full SHA, with the version in a comment at the end of the line. A
+  mirror pins the two reusable workflows in this method. Each reusable workflow does a
+  checkout of this repository at the commit of the workflow (`github.job_workflow_sha`) for
+  the toolbox action and `toolchain.lock.toml`. Thus, the pin of the workflow is the only
+  pin. The URLs in `includes:` use the git tag `v2`, and the image uses the tag
+  `<variant>-v2`. The two tags move. When they move, all mirrors get the release.
+- Give `-r` to each `xargs` if a filter can make its input empty. GNU `xargs` runs its
+  command one time on empty input. A guard on the file that a pipe reads is not a guard on
+  the input of `xargs`. For example, the `SLASH` awk of `pages` removes the root, which has
+  no key without a slash. Thus, if the only changed directory of a run is the root, that
+  awk sends no line to `xargs`.
+- A `>-` folded block keeps a newline if a line that continues the line before it starts
+  with more spaces than the lines around it. The awk programs of `pages` use this. Put a
+  backslash at the end of a shell line that must continue. `task check` shows how the block
+  renders.
+- On a macOS disk, two directory names that are different only in uppercase and lowercase
+  letters are one directory. Thus, the pages that a laptop writes from a listing of
+  upstream are not complete if upstream has two such directories. For example, CTAN has
+  `obsolete/support/TeXshell/` and `texshell/`. The runner uses ext4, and it writes the two
+  directories.
+- Put a YAML scalar that contains a literal `: ` between single quotation marks (`'`).
+  Write each `'` in it two times. Without the quotation marks, YAML reads the `: ` as a
+  key, also in `sed` and `awk` text in the line.
+- In `verify`, read or write `.run/tl` only for a batch with a `TL` path. If not, a
+  redirect into a directory that no step made can stop a run. The fixtures and CI do not
+  show this problem.
+- The `status:` check of `prepare` reads all of `changed.txt`, not the batch. Thus,
+  `prepare` runs on almost all runs. But if the delta of a run has no `TL` path, `prepare`
+  does not run, and `.run/tl` is not there. Each branch of `verify` reads the batch. The
+  container branch and the decision-batch branch use `.run/tl` only if the batch has a
+  `TL` path.
+- Do not make a task internal if a host verb starts it with its name in the image. go-task
+  does not start an internal task from the command line. For example, `empty-trash` starts
+  `empty-trash-pipeline` with `task op`. Thus, `empty-trash-pipeline` is not internal.
+- go-task reads the global vars of the Taskfiles that one Taskfile includes in a random
+  sequence at each run (verified, 3.53.1 and 3.54.0). Thus, an engine global var that reads
+  a toolbox var (`RUN`) can get that var with no value in the tasks of a mirror. For this
+  cause, `SESSION` and `UPLOAD` in `proton.yml` give `ROOT_DIR/.run` in full. Also, if a
+  mirror sets `IMAGE` in its root vars, a run can use the default of the engine. If the
+  toolbox entry of `includes:` sets `IMAGE`, the run always uses that value.
 
 ## Verifying a change
 
 ```sh
 cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
 cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
+sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
 ```
 
-A verb change updates the `render.txt` files via `task render-update`; `offline` is
-each engine's own check. The rsync one runs over `examples/rsync/fixtures/`: the list
-diff over `run-root` and `run-empty`, `retry`'s exit codes, `pages` over `run-pages`
-(whose `want/` is ctan's page set, matched byte for byte), `smoke`'s page read-back over
-`run-smoke`, and `prepare` and `verify` over `tree/`, a signed subtree whose tlpdb is signed by a throwaway key pinned in the
-example. `label`, `label-trees` and `fresh` run over files the check
-writes itself, because their names and first bytes are the point: a change to the
-image's `mime.types` that moves a label fails there, before anything uploads. Regenerate the tree with a new key only to change its shape; the private half
-was never kept. The proton one runs `confirm` over `examples/proton/fixtures/`, an
-accepting and a refusing upload summary, and the `age` verb round trip with a throwaway
+After a change to a verb, run `task render-update` to update the `render.txt` files.
+`offline` is the check of each engine.
+
+The rsync check runs on `examples/rsync/fixtures/`:
+
+- The list diff on `run-root` and `run-empty`
+- The exit codes of `retry`
+- `pages` on `run-pages`. Its `want/` is the page set of ctan, and the result must agree
+  with it byte for byte.
+- The page read-back of `smoke` on `run-smoke`
+- `prepare` and `verify` on `tree/`, a signed subtree. A test key, which the example pins,
+  signs its tlpdb.
+- `label`, `label-trees` and `fresh`, on files that the check writes. The check examines
+  their names and their first bytes. Thus, if a change to the `mime.types` of the image
+  changes a label, the check stops there, before the engine uploads a file.
+
+Make the tree again, with a new key, only to change its shape. There is no copy of the
+private half of the test key.
+
+The proton check runs `confirm` on `examples/proton/fixtures/`: an upload summary that it
+accepts and one that it rejects. Then it does a dry run of `empty-trash-pipeline` from the
+command line. Last, it encrypts and decrypts a file with the `age` verb and a test
 identity.
 
-A README change is a diff `task check` cannot see; the review is reading it. Every
-anchor a mirror's README links here (`#secrets`, `#storage`, `#the-rsync-engine`,
-`#the-proton-engine`) is a heading in `README.md`; renaming one breaks four repositories.
+`task check` does not examine a change to `README.md`. For that change, the review is the check.
+Seven repositories link to headings of `README.md`: ctan, dropbox, github, gnu, nongnu, site
+and tlnet. Do not change the text of these headings. If you change it, the links from
+these repositories cannot find them:
+
+- `#secrets`
+- `#storage`
+- `#the-toolbox`
+- `#the-rsync-engine`
+- `#when-a-run-fails`
+- `#content-types`
+- `#the-proton-engine`
+- `#the-session`
+- `#r2-specifics`
+- `#monitoring`
+- `#rules-a-mirror-keeps`.

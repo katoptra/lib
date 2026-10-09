@@ -1,24 +1,42 @@
 # Contributing
 
-The [organization's rules](https://github.com/katoptra/.github/blob/main/CONTRIBUTING.md)
-apply. This repository adds three.
+The [rules of the organization](https://github.com/katoptra/.github/blob/main/CONTRIBUTING.md)
+are applicable to this repository. This repository adds three rules:
 
-- **No `vars:` default for anything a mirror owns.** A default declared in this file's
-  `vars:` block shadows the mirror's root value. Defaults go inline in the command as
-  `{{.X | default N}}`.
-- **The verb names in `toolbox.yml` are reserved.** Host-side and in-container verbs
-  share one namespace when flattened into a mirror. Renaming one is a major version.
-- **A change to a verb is a change to a `render.txt`.** A toolbox verb changes both
-  examples' files, an engine verb changes `examples/rsync/render.txt`. Run `task
-  render-update` in each example and commit the result with the change. The pull
-  request diff is the review. A verb that is `silent` renders nothing, so `report`'s
-  rows are reviewed in the diff of the file itself.
+- **Do not put a `vars:` default in `toolbox.yml` or in an engine for a var that a mirror
+  sets.** If a `vars:` block has a default, the run uses that default, not the root value
+  of the mirror. Put each default inline in the command: `{{.X | default N}}`. `IMAGE` is
+  different: each engine sets `IMAGE: '{{.IMAGE | default "..."}}'` in `vars:`. Thus, if
+  the toolbox entry of `includes:` gives `IMAGE`, the run uses that value.
+- **Do not change the name of a verb in `toolbox.yml` or in an engine.** A mirror includes
+  these files with `flatten: true`. Then the host verbs and the verbs in the container use
+  one namespace.
+  A new name for one of these verbs is a new major version.
+- **A change to a verb that a pipeline runs is a change to a `render.txt`.** `render` makes
+  a dry run of the `pipeline` of each example. A change to a verb changes these files:
+  - A toolbox verb: the `render.txt` of each example that runs it
+  - A verb of the rsync engine: `examples/rsync/render.txt`
+  - A verb of the proton engine: `examples/proton/render.txt`.
+
+  A host verb, for example `run` or `session-seal`, is not in a render. Run
+  `task render-update` in each example. Commit the result with the change. The diff of the
+  pull request is the review. A verb with `silent: true` renders no command. Thus, for
+  `report` and `report-engine`, the review of their rows is in the diff of the file that
+  has the verb.
 
 ## Checking a change
 
 ```sh
 cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
-cd examples/proton && task image-build && task run -- task tools && task check
+cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
+sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
 ```
 
-CI runs the same commands per image on every pull request.
+CI does these steps for each image, on each pull request and on each push to `main`:
+
+1. It builds the image.
+2. It runs `task run -- task tools`.
+3. It runs `task check`.
+4. It runs `task run -- task offline`.
+
+It also runs the three guards one time, in the job of the `rsync` image.

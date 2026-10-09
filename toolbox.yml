@@ -220,8 +220,7 @@ tasks:
   # that a run starts does not, because the schedule is not in the mirror and its times
   # can change. The last reconcile is the start epoch of the run that completed it. The
   # pull and push verbs of the engine keep it at .state/reconciled. The rsync engine
-  # compresses it and its state with xz. A mirror with no engine that reconciles writes
-  # these two verbs in its Taskfile.
+  # compresses it and its state with xz.
   #   - RECONCILE=true always reconciles.
   #   - RECONCILE=false does not reconcile.
   #   - RECONCILE=auto, the default, reconciles when the time since the last reconcile is
