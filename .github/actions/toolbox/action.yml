@@ -17,13 +17,16 @@ runs:
       run: |
         set -eu
         lock() { python3 "$LIB/docker/lock.py" "$1" "$LIB/toolchain.lock.toml"; }
+        # curl tries each download a maximum of five times. After each failure, it waits
+        # two times longer than the wait before, from 1 second.
+        get() { curl -fsSL --retry 4 --retry-all-errors "$@"; }
         arch="$(dpkg --print-architecture)"
-        curl -fsSL "$(lock task.base_url)/$(lock task.linux_${arch}.archive)" -o /tmp/task.tgz
+        get "$(lock task.base_url)/$(lock task.linux_${arch}.archive)" -o /tmp/task.tgz
         echo "$(lock task.linux_${arch}.sha256)  /tmp/task.tgz" | sha256sum -c -
         sudo tar -xzf /tmp/task.tgz -C /usr/local/bin task
         task --version
         test "$OP" = true || exit 0
-        curl -fsSL "$(lock op.base_url)/$(lock op.linux_${arch}.archive)" -o /tmp/op.zip
+        get "$(lock op.base_url)/$(lock op.linux_${arch}.archive)" -o /tmp/op.zip
         echo "$(lock op.linux_${arch}.sha256)  /tmp/op.zip" | sha256sum -c -
         sudo unzip -q -o /tmp/op.zip op -d /usr/local/bin
         op --version
