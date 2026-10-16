@@ -147,7 +147,9 @@ The diagram does not show these four items:
   not read the vault a second time. If the runner stops a run, at the timeout or because a
   person cancels it, the run does not start its failure path. Then the workflow runs
   `failed` again from the host, and this reads the vault one more time. Such a run does
-  not occur frequently.
+  not occur frequently. If `op` fails before it starts the pipeline, for example with a
+  502 from 1Password, the `op` verb reads the vault again. It tries a maximum of five
+  times.
 - **In the container, task does not use the network for its Taskfiles.** The image sets
   `TASK_REMOTE_OFFLINE=1`. The `.task/remote` cache of the mirror goes into the container
   with the repository.
@@ -190,7 +192,7 @@ not override them.
 | `render-update` | `render`, then it copies the render to `render.txt` |
 | `render` | `task --dry --force pipeline` in the image, with an empty `.run`. It writes the result to `.run/render.txt`. No secret goes into the container |
 | `run -- <cmd>` | Runs a command in the image, with the repository at `/work` |
-| `op -- <cmd>` | `run`, in `op run --env-file=op.env` if the repository has `op.env` |
+| `op -- <cmd>` | `run`, in `op run --env-file=op.env` if the repository has `op.env`. If `op` fails before it starts the command, the verb tries again, a maximum of five times. If the command starts, the verb does not start it again |
 | `image` | Downloads `IMAGE`. While the host has the image, it does not download it again |
 | `image-build` | Builds `IMAGE` from `LIB_DIR/docker/<variant>.Dockerfile`. The default `LIB_DIR` is `../lib` |
 | `image-clean` | Removes `IMAGE` |
@@ -1117,8 +1119,8 @@ verb sets `offline: true`. The job then also runs `task run -- task offline` in 
 
 `.github/actions/toolbox` installs go-task on the runner. Unless `op: 'false'`, it also
 installs the 1Password CLI. It uses the versions and the checksums in
-`toolchain.lock.toml`. With this action, a runner can run `task sync`. All other tools run
-in the image.
+`toolchain.lock.toml`. curl tries each download a maximum of five times. With this action,
+a runner can run `task sync`. All other tools run in the image.
 
 ## Using it in a mirror
 

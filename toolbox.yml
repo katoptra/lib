@@ -139,9 +139,23 @@ tasks:
     cmds:
       # With no op.env, the secrets are in the environment before this command starts (for
       # example, GitHub secrets).
+      #
+      # op can fail before it starts the command, for example with a 502 from 1Password.
+      # Then the verb tries again. It tries a maximum of five times, and it waits 5, 10, 20
+      # and 40 seconds between the tries. The command first makes the file $m. If $m
+      # exists, op started the command. Then the exit of the verb is the exit of the
+      # command, and the verb does not start the command again.
+      # .github/op-retry-check.sh is the check.
       - |
-        if test -f op.env; then op run --env-file=op.env -- task run -- {{.CMD}}
-        else task run -- {{.CMD}}; fi
+        if test ! -f op.env; then task run -- {{.CMD}}; else
+          m=$(mktemp -u)
+          for i in 1 2 3 4 5; do
+            rc=0; op run --env-file=op.env -- sh -c ': > "$1"; shift; exec "$@"' sh "$m" task run -- {{.CMD}} || rc=$?
+            if test $rc = 0 || test -e "$m" || test $i = 5; then break; fi
+            s=$((5 * 2 ** (i - 1))); echo "op run exit $rc, the command did not start, retry $i in ${s}s" >&2; sleep $s
+          done
+          rm -f "$m"; exit $rc
+        fi
 
   clean:
     desc: Delete .run, the engine's staging tree and the Taskfile cache; nothing else, so a fixture kept in .git/info/exclude survives

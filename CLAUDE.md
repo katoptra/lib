@@ -110,6 +110,7 @@ Read that section before you write.
 cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
 cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
 sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
+sh .github/op-retry-check.sh
 ```
 
 After a change to a verb, run `task render-update` to update the `render.txt` files.
