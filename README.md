@@ -345,12 +345,12 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `fetch` | Copies the files of the batch into `staging/` with rsync, and copies the target of each symlink. If upstream deletes a path after the listing, `fetch` does not copy it |
 | `verify` | A hook. If `TL_KEY` has a value: it compares each signed file and each container in the batch with the tlpdb |
 | `publish` | Runs `label` on the batch. Then it runs `aws s3 cp --recursive` one time for each type, with the files of each type in a different tree. It sends each file as one PutObject, and it makes no listing of the bucket. The engine does not use `aws s3 sync`. The `FRESH_KEY` file goes last |
-| `label` | Writes `.run/labels.txt`: the Content-Type of each file in staging, from its name and its first KiB. Refer to [Content types](#content-types) |
+| `label` | Writes `.run/labels.txt`: the Content-Type of each file in staging, from its name and its first KiB. A text type gets a charset if the file is UTF-8. Refer to [Content types](#content-types) |
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
 | `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the state. Then it runs `reconciled` |
-| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, and removes the keys of the directories that became empty. Then it moves `.state/indexed.txt.xz` to the new state. A mirror with a different landing page overrides `index` |
-| `pages` | Writes a page for each directory that the run changed, from the state, into staging. The keys with no slash at the end go in one tree for each depth |
+| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that became empty. Then it moves `.state/indexed.txt.xz` to the new state. A mirror with a different landing page overrides `index` |
+| `pages` | Writes a page for each directory that the run changed, from the state, into staging. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
 | `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
 | `smoke-mirror` | A hook, empty here. A mirror with more items to read back writes it |
@@ -358,19 +358,20 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `retry` | Runs a command a maximum of five times. After a transport error of rsync (exit 5, 10, 12, 30 or 35), it runs the command again, with backoff. It accepts exit 23 and exit 24, and the run continues. rsync exits 23 if it cannot read a path, and 24 if upstream deletes a file while rsync sends it. Thus, a directory that rsync cannot read does not stop the run, and `delete` removes its files, the same as files that upstream deleted. Only `LIST_FLOOR` stops a large loss |
 
 The verbs in the table also run these verbs: `normalise`, `pull`, `push`, `batch`,
-`label-trees`, `merge` and `remove`. `pull` and `push` move a key with xz compression
+`label-trees`, `merge`, `remove` and `index-copy`. `pull` and `push` move a key with xz compression
 between the bucket and `.run`. A verb of a mirror can also run them.
 
 `smoke` reads these items back from `HOST`, and it stops the run if one of them is not
 correct:
 
 - One key of each type that the run published. Its length in bytes must agree with the
-  listing, and its Content-Type must agree with the label.
+  listing, and its full Content-Type, with the charset, must agree with the label.
 - The `FRESH_KEY` file, for its length. `smoke` reads it only if the state has it. While
   the engine fills an empty bucket, the runs that stop at `MAX_BATCHES` do not upload the
   decision batch. The bucket gives 404 for a key that it did not contain before.
 - If `TL` has a value: `texlive.tlpdb.sha512`. It must be the same as the verified copy.
-- If `INDEX` has a value: one page that `index` wrote, at its two keys.
+- If `INDEX` has a value: one page that `index` wrote, at its two keys. If the page key is
+  a copy of an index file, its length and its Content-Type must agree with that file.
 - If `CANARY` has a value: that file, read as `libwww-perl`. It must be the same as the copy
   in the bucket, byte for byte.
 - The first `.tar.gz` that is not empty. It must have no `Content-Encoding`.
@@ -494,8 +495,21 @@ each page has two keys:
 A `<base href>` lets one document serve the two URLs. A file system cannot contain `a/b` and
 `a/b/` at the same time. Thus, `pages` puts the keys with no slash in one tree for each
 depth, and `index` uploads one tree at a time. `index` gives these keys
-`--content-type text/html`. Without it, a key with no suffix gets `binary/octet-stream`,
-and a browser downloads the page and does not show it.
+`--content-type 'text/html; charset=utf-8'`. Without it, a key with no suffix gets
+`binary/octet-stream`, and a browser downloads the page and does not show it.
+
+`INDEX_FILES` gives the names of the index files, in sequence, for example
+`index.html index.htm`. A directory can contain a file with one of these names. Then:
+
+- `<dir>/<INDEX>` is a server-side copy of the first such file. The copy has the same
+  bytes, the same Content-Type and the same ETag. Thus, `/dir/` serves the index file, as
+  the upstream server does.
+- `<dir>` keeps the listing.
+- If upstream removes the index file, the next run writes the listing to the two keys.
+
+Set `INDEX_FILES` only if the upstream server sends the index file for the directory URL.
+CTAN tells its mirrors not to do this (`DirectoryIndex disabled`). Thus, ctan does not set
+it.
 
 No page goes into the state. `merge` adds to the state only the files that are in staging
 and also in the batch, and a page is in no batch.
@@ -506,15 +520,18 @@ next run writes all the pages again, one time. Thus, the pages of the directorie
 not change also get a change to the HTML of the page or to `PAGE_FOOT`. `reconcile` does
 not delete the two keys.
 
-The zone has one rule for each host:
+The rsync mirrors of katoptra use one `INDEX`, `katoptra.org.directory.index.html`. Thus,
+the Transform Rules of the zone for their hosts use one rewrite:
 
 ```text
 when:         ends_with(http.request.uri.path, "/")
-rewrite path: concat(http.request.uri.path, http.host, ".directory.index.html")
+rewrite path: concat(http.request.uri.path, "katoptra.org.directory.index.html")
 ```
 
-This rule also serves the page of the root for `/`. In ctan, the rule does not include `/`,
-because `/` serves the `index.html` of CTAN.
+The rewrite does not use `http.host`. Thus, two hosts of one bucket get the same key for
+each URL. This rule also serves the page of the root for `/`. In ctan, the rule does not
+include `/`, because a second rule serves the `index.html` of CTAN for `/`. No two rules
+match one URL.
 
 #### Content types
 
@@ -539,14 +556,17 @@ CLI sets no type:
 4. A name with no type gets its type from the bytes. A known signature gives its type. If
    the bytes have no NUL, the type is `text/plain`. If they have a NUL, the type is
    `application/octet-stream`.
+5. A `text/*` type gets `; charset=utf-8` if the full file is valid UTF-8. ASCII is valid
+   UTF-8. The bytes of other text do not tell their encoding. Thus, other text gets no
+   charset.
 
 A control byte is not a NUL. Thus, a `.sty` file of CTAN with a `^Z` at its end stays
 `text/x-tex`. Three checks make sure that `label` obeys these rules:
 
 - `offline` gives a set of names and bytes to `label`, and stops on each change. If an
   update of the image changes `mime.types`, this check shows it.
-- `smoke` reads one key of each type back from the domain, and compares the served type
-  with the label.
+- `smoke` reads one key of each type back from the domain, and compares the full served
+  type, with the charset, with the label.
 - The `.tar.gz` check makes sure that tarballs have no `Content-Encoding`.
 
 #### The vars
@@ -566,6 +586,7 @@ inline default, and a mirror sets only the vars that are different:
 | `FILTER` | Empty | rsync filter arguments that make the listing smaller, for a mirror of a subtree |
 | `OWN` | Empty | Keys at the root of the bucket that the mirror writes, not upstream. A space is between two keys. `reconcile` does not delete them |
 | `INDEX` | Empty | The key suffix of the directory pages. If it has a value, `index` writes the pages. `reconcile` does not delete the pages, or a key with the name of a directory of the state |
+| `INDEX_FILES` | Empty | The names of the index files, in sequence. A space is between two names. The page key of a directory with such a file is a copy of the first one. Refer to [Directory pages](#directory-pages) |
 | `PAGE_FOOT` | Empty | The HTML at the end of each directory page. `%s` is the encoded path of the directory, and `%%` gives one `%` |
 | `CANARY` | Empty | A file that `smoke` reads from the domain as a Perl client, and compares with the bucket, byte for byte. All files can be the canary. A file with `http://` links (not `https://`) or `mailto:` addresses also finds the HTML rewriters of the zone. The path must have no character that a URL encodes |
 | `FRESH_KEY` | Empty | A file in which upstream records its clock, as Unix time or as `YYYY-MM-DD-HH-MM` (the format of CTAN). If it has a value, `fresh` stops the run when the clock is more than `FRESH_HOURS` before the time of the run |
@@ -884,7 +905,7 @@ engine.
 |---|---|---|
 | rsync | Each path of upstream, at the root | The mirror. A public domain serves the bucket |
 | rsync | `.state/applied.txt.xz` | The state: the keys that the bucket contains, with the length and the mtime of upstream |
-| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | The state that the directory pages showed last, and the pages with their two keys |
+| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | The state that the directory pages showed last, and the pages with their two keys. With `INDEX_FILES`, `<dir>/<INDEX>` can be a copy of an index file |
 | rsync, a key of the mirror | `index.html` | The landing page of tlnet. `reconcile` does not delete it, because it is in `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. This is the only key |
 | A mirror with its pipeline | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | The state of dropbox and its copies with a date. A lifecycle rule of the bucket deletes the history after a time |
@@ -1182,8 +1203,9 @@ The other public mirrors have these structures:
   of `includes:`. It writes an `index` that uploads its landing page, and a `report-mirror`
   with its row.
 - A mirror with directories that a browser can show, for example ctan, gnu and nongnu, adds
-  `INDEX` and `PAGE_FOOT` to its root vars. It adds the Transform Rule of
-  [Directory pages](#directory-pages) to its zone. The engine does all the other work.
+  `INDEX` and `PAGE_FOOT` to its root vars. If its upstream serves index files, it also
+  adds `INDEX_FILES`. Its host must be in the host list of the Transform Rule of
+  [Directory pages](#directory-pages). The engine does all the other work.
 
 ### A proton mirror
 

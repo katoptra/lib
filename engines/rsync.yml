@@ -29,6 +29,10 @@
 #       none.
 #     - INDEX: the key suffix of the directory pages. When INDEX is set, index makes a
 #       page for each directory.
+#     - INDEX_FILES: the names of the upstream index files, in sequence, with a space
+#       between each two names. When a directory has such a file, its page key is a copy
+#       of the first one, and its key without the slash keeps the listing. An empty value
+#       gives a listing for each directory.
 #     - PAGE_FOOT: the HTML at the end of each page, with %s for the encoded path of the
 #       directory. An empty value gives none.
 #     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
@@ -126,6 +130,10 @@ vars:
       tolower($1) == "content-length:" { c = $2 }
       $2 == "416" { z = 1 }
       END { sub(/\r/, "", r); sub(/\r/, "", c); print (r != "" ? r : (z ? 0 : c)) }'
+  # The full Content-Type value from the headers, with its parameters (for example
+  # "text/plain; charset=utf-8").
+  CTYPE: |-
+    awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); sub(/^[^:]*:[ \t]*/, ""); print }'
   # Percent-encoding for awk. enc(s) keeps the unreserved set and "/", and it encodes all
   # other characters. Upstream paths contain spaces and ( ) [ ] { } & # > ~ $. This text
   # goes into ENCODE, and into the awk program of the pages verb.
@@ -514,11 +522,14 @@ tasks:
       #   4. A name that has no type in mime.types gets a type from its bytes. This type
       #      is a known signature, text/plain without a NUL, or application/octet-stream
       #      with a NUL.
+      #   5. A text/* type gets "; charset=utf-8" when the full file is UTF-8 (ASCII is
+      #      UTF-8). A browser then shows its characters correctly. The bytes of other
+      #      text do not tell their encoding. Thus, other text gets no charset.
       # A control byte is not a NUL: some .sty files of CTAN contain ^Z, and they stay
       # text. Without "./", guess_type reads a name with a colon as a URL scheme.
       - |
         python3 -I - {{shellQuote .DIR}} {{shellQuote .COMPRESSED}} > {{.RUN}}/labels.raw <<'PY'
-        import mimetypes, os, sys
+        import codecs, mimetypes, os, sys
 
         root, table = sys.argv[1], sys.argv[2]
         endings = {s: f[0] for f in map(str.split, table.splitlines()) if f for s in f[1:]}
@@ -550,13 +561,28 @@ tasks:
                 return t if agrees else seen
             return t
 
+        # One MiB at a time: some text files are large (FILES.byname of CTAN is 27 MB).
+        def utf8(path):
+            d = codecs.getincrementaldecoder("utf-8")()
+            try:
+                with open(path, "rb") as h:
+                    for part in iter(lambda: h.read(1 << 20), b""):
+                        d.decode(part)
+                d.decode(b"", final=True)
+            except UnicodeDecodeError:
+                return False
+            return True
+
         out = sys.stdout.buffer
         for d, _, files in os.walk(root):
             for f in files:
                 p = os.path.join(d, f)
                 with open(p, "rb") as h:
                     head = h.read(1024)
-                out.write(os.fsencode(os.path.relpath(p, root)) + b"\t" + label(f, head).encode() + b"\n")
+                t = label(f, head)
+                if t.startswith("text/") and utf8(p):
+                    t += "; charset=utf-8"
+                out.write(os.fsencode(os.path.relpath(p, root)) + b"\t" + t.encode() + b"\n")
         PY
       - LC_ALL=C sort {{.RUN}}/labels.raw > {{.RUN}}/labels.txt && rm {{.RUN}}/labels.raw
 
@@ -711,14 +737,15 @@ tasks:
       # pages stay for smoke. The split verb of the next run removes them. The verb does
       # not append them to publish.txt, because smoke compares the size of that sample
       # with upstream, which has no pages.
-      - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html {{.STAGING}}/ {{.S3}}/
+      - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive --content-type 'text/html; charset=utf-8' {{.STAGING}}/ {{.S3}}/
       # One upload for each depth, because no tree can hold a/b and a/b/ together. A
       # slashless key has no suffix that the CLI can use. Thus, the command gives the
       # type. Without it, the CLI sends binary/octet-stream, and a browser downloads the
       # page and does not show it.
       - >-
         for d in {{.SLASH}}/*/; do test -d "$d" || continue;
-        aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html "$d" {{.S3}}/; done
+        aws s3 cp {{.AWS_FLAGS}} --recursive --content-type 'text/html; charset=utf-8' "$d" {{.S3}}/; done
+      - {task: index-copy}
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
       # At this point, the pages show the state, and the bucket holds that state, because
       # checkpoint put it there before this verb started. One server-side copy makes
@@ -726,20 +753,40 @@ tasks:
       # before this line, the next run makes the same pages again.
       - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
 
+  # Not internal: the offline check of lib starts it with its name.
+  index-copy:
+    desc: Copy the index file of each directory in RUN/index-real.txt to the page key of that directory, in the bucket
+    cmds:
+      # The page key of a directory with an index file (INDEX_FILES) is one server-side
+      # copy of that file. COPY keeps its Content-Type, and the copy has the same bytes
+      # and ETag. Thus, the URL of the directory serves the upstream file, as its upstream
+      # does. The source is in the bucket, because pages read it from the state that
+      # checkpoint put there. The CLI encodes --copy-source. Thus, the command gives the
+      # key with no change. A key that is encoded first is encoded two times, and the copy
+      # then reads a different key. s3api does not accept --no-progress. Thus, this command does
+      # not use AWS_FLAGS.
+      - >-
+        while IFS="$(printf '\t')" read -r s k; do
+        aws s3api copy-object --bucket {{.BUCKET}} --copy-source "{{.BUCKET}}/$s" --key "$k" --metadata-directive COPY > /dev/null;
+        echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
+
   pages:
-    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied
+    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied, RUN/index-real.txt for the directories with an index file
     set: [pipefail]
     vars:
       # The verb writes each page to two keys:
       #   - <dir>/INDEX. For a directory URL, the rewrite of the zone sends this key.
       #   - <dir> without its slash at the end. This key is for the same URL without the
       #     slash. For that URL, all other mirrors send 301.
+      # A directory with a file in INDEX_FILES gets only the second key. RUN/index-real.txt
+      # then has the line "<dir><file> TAB <dir>INDEX", and index copies that file to its
+      # page key.
       # No filesystem can hold a/b and a/b/ together. Thus, the second copies go into one
       # tree for each directory depth, and the upload sends one tree at a time. SLASH is a
       # task var, because a global var cannot follow a RUN that the caller gives.
       SLASH: '{{.RUN}}/slash'
     cmds:
-      - mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete
+      - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
       # A page changes when a file in its directory, or a directory below it, is added,
       # changed or removed. Thus, the verb makes the page of each ancestor of each changed
       # line again.
@@ -787,26 +834,32 @@ tasks:
       # and for /dir. Without it, a relative href in the second resolves against the
       # parent. PAGE_FOOT is at the end of each page, with %s for the encoded path of the
       # directory. When PAGE_FOOT is empty, the table is the last part of the page.
+      #
+      # rank gives the position of each name in INDEX_FILES. real is the index file of the
+      # open directory with the lowest rank. Without a real, shut writes the page key.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
           { n = split($1, c, "/"); d = ""
             for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
             if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
-        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} '{{.URLENC}}
+        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
+          -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" '{{.URLENC}}
+          BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i }
           function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
-          function open(d) { cur = d; live = 1
+          function open(d) { cur = d; live = 1; real = ""
             p = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>\n"
             p = p "<base href=\"/" enc(d) "\">\n"
             p = p "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>\n"
             p = p "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>\n"
             if (d != "") p = p "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n" }
           function shut(  f, b, k, e) { p = p "</table>" (F == "" ? "" : "<p>" sprintf(F, enc(cur)) "</p>") "</body></html>\n"
-            f = S cur I; printf("%s", p) > f; close(f)
+            if (real == "") { f = S cur I; printf("%s", p) > f; close(f) } else print cur real "\t" cur I > X
             if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
               f = R k "/" b; printf("%s", p) > f; close(f) } }
           !live || $1 != cur { if (live) shut(); open($1) }
           $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
+          ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
           { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }
           END { if (live) shut() }'
 
@@ -842,7 +895,7 @@ tasks:
         want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
         h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u");
         got=$(printf '%s\n' "$h" | {{.SIZE}});
-        ct=$(printf '%s\n' "$h" | awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); print $2 }');
+        ct=$(printf '%s\n' "$h" | {{.CTYPE}});
         echo "$k: $got bytes (listing: $want), served as ${ct:-no type} (label: ${t:-none})"; test "$got" = "$want" || exit 1;
         case "{{.URL}}" in http*) test -z "$t" || test "$ct" = "$t" || exit 1 ;; esac; done
       # The tlpdb key is in the decision batch, the last batch. Thus, a run that stopped
@@ -852,11 +905,14 @@ tasks:
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test -f {{.RUN}}/chain ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
-      # This command reads one of the pages that this run made. It reads that page at its
-      # two keys, with each key in the URL (no zone rule is necessary). It compares the
-      # size with the copy in staging, with the same ranged read of one byte as the
-      # sample. The two keys hold the same bytes. Thus, one copy in staging gives the size
-      # for the two. The root has no slashless key.
+      # This command reads one of the pages that this run made, at its two keys, with each
+      # key in the URL (no zone rule is necessary). r gives the size and the type of a
+      # key, with the same ranged read of one byte as the sample.
+      #   - The page key: for a directory in index-real.txt, the size and the type must be
+      #     those of its index file. For other directories, the size must be that of the
+      #     page in staging.
+      #   - The slashless key: the size must be that of the listing in the SLASH tree. The
+      #     root has no slashless key.
       #
       # ${d} is in braces, because the INDEX after it starts with a letter. $d{{.INDEX}}
       # is the name of a variable that is not there. test -n then stops the command, and
@@ -865,12 +921,17 @@ tasks:
       # together.
       - >-
         {{if .INDEX}}test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
-        want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want";
-        case "{{.URL}}" in http*) b=1 ;; *) b=0 ;; esac;
-        printf '%s\n' "$d" | awk -v i="{{.INDEX}}" -v b="$b" '{ print $0 i } b == 1 && $0 != "" { print substr($0, 1, length($0) - 1) }'
-        | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
-        got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
-        echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }{{else}}echo "no INDEX: no directory pages to read back"{{end}}
+        r() { h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$(printf '%s\n' "$1" | {{.ENCODE}} | cut -f2)");
+        echo "$(printf '%s\n' "$h" | {{.SIZE}}) bytes, type $(printf '%s\n' "$h" | {{.CTYPE}})"; };
+        s=$(awk -F'\t' -v k="${d}{{.INDEX}}" '$2 == k { print $1 }' {{.RUN}}/index-real.txt);
+        if test -n "$s"; then want=$(r "$s");
+        else want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want"; want="$want bytes"; fi;
+        got=$(r "${d}{{.INDEX}}"); test -n "$s" || got=${got%%,*};
+        echo "${d}{{.INDEX}}: $got (${s:-page}: $want)"; test "$got" = "$want";
+        case "{{.URL}}" in http*) test -z "$d" || { p=${d%/};
+        want=$(wc -c < "{{.RUN}}/slash/$(printf '%s\n' "$p" | awk -F/ '{ print NF }')/$p" | tr -d ' '); test -n "$want";
+        got=$(r "$p"); got=${got%%,*}; echo "$p: $got (listing: $want bytes)"; test "$got" = "$want bytes"; } ;; esac;
+        }{{else}}echo "no INDEX: no directory pages to read back"{{end}}
       # The HTML rewriters of Cloudflare are between R2 and the client. Thus, the check
       # compares the object with the file that the domain sends. A size check is not
       # sufficient. Automatic HTTPS Rewrites can make a link one byte longer, while the
@@ -962,7 +1023,7 @@ tasks:
       # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # With INDEX set, the pages that index made and the keys that it removed.
-      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn under both keys, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn, $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) of them with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # Rows that show only when they have data.
       - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"

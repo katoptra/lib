@@ -13,6 +13,7 @@ vars:
   HOST: example.katoptra.org
   LIST_FLOOR: 1
   INDEX: '{{.HOST}}.directory.index.html'
+  INDEX_FILES: index.html index.htm
   PAGE_FOOT: 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.'
   CANARY: pub/index.html
   FRESH_KEY: timestamp
@@ -140,11 +141,18 @@ tasks:
       # run-pages: the new state has a file with & < > in its name, and a directory with a
       # space in its name. gone/ is not in the new state. pages makes the pages of the
       # root, a/, a/b/ and a/sp ace/, each with its two keys (the root with one). It also
-      # gives the two keys of gone/ for removal. Each byte must agree with want/.
+      # gives the two keys of gone/ for removal. a/doc/ has index.htm and index.html. Thus,
+      # its listing goes only to its key without the slash, and index-real.txt gives
+      # index.html, the first name in INDEX_FILES, as the source of its page key. Each byte
+      # must agree with want/. staging keeps the empty directory a/doc/, which git cannot
+      # keep in want/. The upload sends no empty directory.
       - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}'}}
-      - diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
+      - find {{.F}}/run-pages/staging -type d -empty -delete && diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
       - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
       - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
+      - cmp {{.F}}/run-pages/want/index-real.txt {{.F}}/run-pages/index-real.txt
+      # CTYPE gives the full value of the header, with its charset.
+      - "test \"$(printf 'HTTP/2 200\\r\\nContent-Type: text/plain; charset=utf-8\\r\\n' | {{.CTYPE}})\" = 'text/plain; charset=utf-8'"
       # run-smoke: an hour with one change only, timestamp, and one new page only, the
       # root. smoke reads timestamp again, and it compares its size with the listing. Then
       # it reads the root page at its INDEX key (a filesystem cannot hold the slashless
@@ -158,6 +166,29 @@ tasks:
       - {task: smoke, vars: {RUN: '{{.F}}/run-smoke', STAGING: '{{.F}}/run-smoke/staging', URL: 'file://{{.F}}/run-smoke/staging'}}
       # smoke rejects a page that index made and that is not in staging.
       - '! task smoke-refuses 2>/dev/null'
+      # run-copy: the one new page is doc/, a directory with an index file. Its page key is
+      # a copy of doc/index.html. smoke reads the two keys and compares their sizes and
+      # types. smoke-refuses-copy makes the copy one byte longer.
+      - |
+        r={{.F}}/run-copy; mkdir -p $r/staging/doc; printf '<p>doc</p>\n' > $r/staging/doc/index.html
+        cp $r/staging/doc/index.html "$r/staging/doc/{{.INDEX}}"; printf 'doc/\n' > $r/index-make.txt
+        printf 'doc/index.html\tdoc/{{.INDEX}}\n' > $r/index-real.txt; : > $r/applied.txt
+      - {task: smoke, vars: {RUN: '{{.F}}/run-copy', STAGING: '{{.F}}/run-copy/staging', URL: 'file://{{.F}}/run-copy/staging'}}
+      - '! task smoke-refuses-copy 2>/dev/null'
+      # run-copy-cli: index-copy gives each source key to the CLI with no change, because
+      # the CLI encodes --copy-source. A key that is encoded first is encoded two times,
+      # and the copy then reads a different key. A stub aws, first on PATH, records the arguments.
+      - |
+        r={{.F}}/run-copy-cli; mkdir -p $r/bin
+        cat > $r/bin/aws <<'EOF'
+        #!/bin/sh
+        printf '%s\n' "$@" >> "$(dirname "$0")/../args"
+        EOF
+        chmod +x $r/bin/aws; printf 'a b/c+d/index.html\ta b/c+d/{{.INDEX}}\n' > $r/index-real.txt
+      - PATH="{{.F}}/run-copy-cli/bin:$PATH" task copy-cli
+      - >-
+        printf '%s\n' s3api copy-object --bucket {{.BUCKET}} --copy-source '{{.BUCKET}}/a b/c+d/index.html'
+        --key 'a b/c+d/{{.INDEX}}' --metadata-directive COPY | diff - {{.F}}/run-copy-cli/args
       # run-label: the command makes it here, because this test is about its names and its
       # bytes. It has a test case for each rule of label:
       #   - A COMPRESSED ending is more important than the remaining part of the name
@@ -170,6 +201,9 @@ tasks:
       #   - An ending that Python reads as compressed and that COMPRESSED does not have is
       #     not text (q.txt.br).
       #   - A colon is not a URL scheme (data:p.html).
+      #   - A text type gets "; charset=utf-8" only when the full file is UTF-8: ASCII
+      #     (README), non-ASCII UTF-8 (r.txt) and the empty k. Latin-1 (s.txt) and UTF-16
+      #     (u.txt) get no charset.
       # label-trees then moves each file other than timestamp out, one tree for each type,
       # and then back. After that, staging has the same bytes that it had at the start.
       - |
@@ -180,18 +214,21 @@ tasks:
         printf '\211\001\000' > $d/g.sig; printf 'PK\003\004' > $d/h.xpi; printf '<p></p>\n' > $d/sub/i.html
         printf 'x\032y\n' > $d/j.sty; : > $d/k; printf '\037\235' > $d/l.Z; printf 'x\000' > $d/m
         printf 'BZh9' > $d/n; printf '<p></p>\n' > "$d/data:p.html"; printf 'abc' > $d/q.txt.br
+        printf 'caf\303\251\n' > $d/r.txt; printf 'caf\351\n' > $d/s.txt; printf '\377\376a\000' > $d/u.txt
         printf '2026-10-08-05-02\n' > $d/timestamp
         cp -R $d {{.F}}/run-label/before
       - {task: label, vars: {RUN: '{{.F}}/run-label', DIR: '{{.F}}/run-label/staging'}}
       - |
-        printf '%s\t%s\n' README text/plain a.diff.gz application/x-gzip b.tar.xz application/x-xz \
-          c.tgz application/x-gzip d.txt application/octet-stream data:p.html text/html e.pdf application/pdf \
+        u='; charset=utf-8'
+        printf '%s\t%s\n' README "text/plain$u" a.diff.gz application/x-gzip b.tar.xz application/x-xz \
+          c.tgz application/x-gzip d.txt application/octet-stream data:p.html "text/html$u" e.pdf application/pdf \
           f.pdf application/x-gzip g.sig application/pgp-signature h.xpi application/x-xpinstall \
-          j.sty text/x-tex k text/plain l.Z application/x-compress m application/octet-stream \
-          n application/x-bzip2 q.txt.br application/octet-stream sub/i.html text/html timestamp text/plain \
+          j.sty "text/x-tex$u" k "text/plain$u" l.Z application/x-compress m application/octet-stream \
+          n application/x-bzip2 q.txt.br application/octet-stream r.txt "text/plain$u" s.txt text/plain \
+          sub/i.html "text/html$u" timestamp "text/plain$u" u.txt text/plain \
         | diff - {{.F}}/run-label/labels.txt
       - {task: label-trees, vars: {TO: up, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
-      - test "$(cd {{.F}}/run-label/staging && find . -type f)" = ./timestamp && test "$(ls {{.F}}/run-label/up/*.type | wc -l)" -eq 11
+      - test "$(cd {{.F}}/run-label/staging && find . -type f)" = ./timestamp && test "$(ls {{.F}}/run-label/up/*.type | wc -l)" -eq 12
       - {task: label-trees, vars: {TO: staging, RUN: '{{.F}}/run-label', STAGING: '{{.F}}/run-label/staging'}}
       - diff -r {{.F}}/run-label/before {{.F}}/run-label/staging && test ! -e {{.F}}/run-label/up
       # fresh on three clocks, from a filesystem:
@@ -223,6 +260,17 @@ tasks:
       R: '{{.RUN}}/fixtures/run-smoke'
     cmds:
       - rm -f {{.R}}/staging/{{.INDEX}}
+      - {task: smoke, vars: {RUN: '{{.R}}', STAGING: '{{.R}}/staging', URL: 'file://{{.R}}/staging'}}
+  copy-cli:
+    desc: index-copy over run-copy-cli, after offline made it; offline runs this task with a stub aws first on PATH
+    cmds:
+      - {task: index-copy, vars: {RUN: '{{.RUN}}/fixtures/run-copy-cli'}}
+  smoke-refuses-copy:
+    desc: smoke over run-copy with the page key one byte longer than its source, after offline made run-copy; offline expects it to fail
+    vars:
+      R: '{{.RUN}}/fixtures/run-copy'
+    cmds:
+      - echo >> "{{.R}}/staging/doc/{{.INDEX}}"
       - {task: smoke, vars: {RUN: '{{.R}}', STAGING: '{{.R}}/staging', URL: 'file://{{.R}}/staging'}}
   verify-refuses:
     desc: verify over a batch naming a container the tlpdb does not describe, after offline staged run-tl; offline expects it to fail
