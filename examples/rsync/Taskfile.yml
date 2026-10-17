@@ -175,6 +175,20 @@ tasks:
         printf 'doc/index.html\tdoc/{{.INDEX}}\n' > $r/index-real.txt; : > $r/applied.txt
       - {task: smoke, vars: {RUN: '{{.F}}/run-copy', STAGING: '{{.F}}/run-copy/staging', URL: 'file://{{.F}}/run-copy/staging'}}
       - '! task smoke-refuses-copy 2>/dev/null'
+      # run-copy-cli: index-copy gives each source key to the CLI with no change, because
+      # the CLI encodes --copy-source. A key that is encoded first is encoded two times,
+      # and the copy then reads a different key. A stub aws, first on PATH, records the arguments.
+      - |
+        r={{.F}}/run-copy-cli; mkdir -p $r/bin
+        cat > $r/bin/aws <<'EOF'
+        #!/bin/sh
+        printf '%s\n' "$@" >> "$(dirname "$0")/../args"
+        EOF
+        chmod +x $r/bin/aws; printf 'a b/c+d/index.html\ta b/c+d/{{.INDEX}}\n' > $r/index-real.txt
+      - PATH="{{.F}}/run-copy-cli/bin:$PATH" task copy-cli
+      - >-
+        printf '%s\n' s3api copy-object --bucket {{.BUCKET}} --copy-source '{{.BUCKET}}/a b/c+d/index.html'
+        --key 'a b/c+d/{{.INDEX}}' --metadata-directive COPY | diff - {{.F}}/run-copy-cli/args
       # run-label: the command makes it here, because this test is about its names and its
       # bytes. It has a test case for each rule of label:
       #   - A COMPRESSED ending is more important than the remaining part of the name
@@ -247,6 +261,10 @@ tasks:
     cmds:
       - rm -f {{.R}}/staging/{{.INDEX}}
       - {task: smoke, vars: {RUN: '{{.R}}', STAGING: '{{.R}}/staging', URL: 'file://{{.R}}/staging'}}
+  copy-cli:
+    desc: index-copy over run-copy-cli, after offline made it; offline runs this task with a stub aws first on PATH
+    cmds:
+      - {task: index-copy, vars: {RUN: '{{.RUN}}/fixtures/run-copy-cli'}}
   smoke-refuses-copy:
     desc: smoke over run-copy with the page key one byte longer than its source, after offline made run-copy; offline expects it to fail
     vars:

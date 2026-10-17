@@ -315,9 +315,7 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
   END { if (live) shut() }'
 task: [index] test ! -s /work/examples/rsync/.run/index-make.txt || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' /work/examples/rsync/staging/ s3://example/
 task: [index] for d in /work/examples/rsync/.run/slash/*/; do test -d "$d" || continue; aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' "$d" s3://example/; done
-task: [index] while IFS="$(printf '\t')" read -r s k; do u=$(printf '%s\n' "$s" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
-function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
-    out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2); aws s3api copy-object --bucket example --copy-source "example/$u" --key "$k" --metadata-directive COPY > /dev/null; echo "copy: $s to $k"; done < /work/examples/rsync/.run/index-real.txt
+task: [index-copy] while IFS="$(printf '\t')" read -r s k; do aws s3api copy-object --bucket example --copy-source "example/$s" --key "$k" --metadata-directive COPY > /dev/null; echo "copy: $s to $k"; done < /work/examples/rsync/.run/index-real.txt
 task: [remove] rm -f /work/examples/rsync/.run/del-*; split -l 1000 -a 4 /work/examples/rsync/.run/index-gone.txt /work/examples/rsync/.run/del-
 task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
      printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \

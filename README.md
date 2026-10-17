@@ -349,7 +349,7 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
 | `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the state. Then it runs `reconciled` |
-| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that became empty. Then it moves `.state/indexed.txt.xz` to the new state. A mirror with a different landing page overrides `index` |
+| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that became empty. Then it moves `.state/indexed.txt.xz` to the new state. A mirror with a different landing page overrides `index` |
 | `pages` | Writes a page for each directory that the run changed, from the state, into staging. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
 | `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
@@ -358,7 +358,7 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `retry` | Runs a command a maximum of five times. After a transport error of rsync (exit 5, 10, 12, 30 or 35), it runs the command again, with backoff. It accepts exit 23 and exit 24, and the run continues. rsync exits 23 if it cannot read a path, and 24 if upstream deletes a file while rsync sends it. Thus, a directory that rsync cannot read does not stop the run, and `delete` removes its files, the same as files that upstream deleted. Only `LIST_FLOOR` stops a large loss |
 
 The verbs in the table also run these verbs: `normalise`, `pull`, `push`, `batch`,
-`label-trees`, `merge` and `remove`. `pull` and `push` move a key with xz compression
+`label-trees`, `merge`, `remove` and `index-copy`. `pull` and `push` move a key with xz compression
 between the bucket and `.run`. A verb of a mirror can also run them.
 
 `smoke` reads these items back from `HOST`, and it stops the run if one of them is not
@@ -503,9 +503,13 @@ depth, and `index` uploads one tree at a time. `index` gives these keys
 
 - `<dir>/<INDEX>` is a server-side copy of the first such file. The copy has the same
   bytes, the same Content-Type and the same ETag. Thus, `/dir/` serves the index file, as
-  on a mirror with Apache.
+  the upstream server does.
 - `<dir>` keeps the listing.
 - If upstream removes the index file, the next run writes the listing to the two keys.
+
+Set `INDEX_FILES` only if the upstream server sends the index file for the directory URL.
+CTAN tells its mirrors not to do this (`DirectoryIndex disabled`). Thus, ctan does not set
+it.
 
 No page goes into the state. `merge` adds to the state only the files that are in staging
 and also in the batch, and a page is in no batch.
@@ -517,16 +521,17 @@ not change also get a change to the HTML of the page or to `PAGE_FOOT`. `reconci
 not delete the two keys.
 
 The rsync mirrors of katoptra use one `INDEX`, `katoptra.org.directory.index.html`. Thus,
-one Transform Rule of the zone serves the pages of their hosts:
+the Transform Rules of the zone for their hosts use one rewrite:
 
 ```text
 when:         ends_with(http.request.uri.path, "/")
 rewrite path: concat(http.request.uri.path, "katoptra.org.directory.index.html")
 ```
 
-The rule does not use `http.host`. Thus, two hosts of one bucket get the same key for each
-URL. This rule also serves the page of the root for `/`. In ctan, that page is a copy of
-the `index.html` of CTAN.
+The rewrite does not use `http.host`. Thus, two hosts of one bucket get the same key for
+each URL. This rule also serves the page of the root for `/`. In ctan, the rule does not
+include `/`, because a second rule serves the `index.html` of CTAN for `/`. No two rules
+match one URL.
 
 #### Content types
 

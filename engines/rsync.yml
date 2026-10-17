@@ -745,22 +745,30 @@ tasks:
       - >-
         for d in {{.SLASH}}/*/; do test -d "$d" || continue;
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type 'text/html; charset=utf-8' "$d" {{.S3}}/; done
-      # The page key of a directory with an index file (INDEX_FILES) is one server-side
-      # copy of that file. COPY keeps its Content-Type, and the copy has the same bytes
-      # and ETag. Thus, the URL of the directory serves the upstream file, as other
-      # mirrors do. The source is in the bucket, because pages read it from the state that
-      # checkpoint put there. The copy source is a URL path. s3api does not accept
-      # --no-progress. Thus, this command does not use AWS_FLAGS.
-      - >-
-        while IFS="$(printf '\t')" read -r s k; do u=$(printf '%s\n' "$s" | {{.ENCODE}} | cut -f2);
-        aws s3api copy-object --bucket {{.BUCKET}} --copy-source "{{.BUCKET}}/$u" --key "$k" --metadata-directive COPY > /dev/null;
-        echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
+      - {task: index-copy}
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
       # At this point, the pages show the state, and the bucket holds that state, because
       # checkpoint put it there before this verb started. One server-side copy makes
       # INDEXED the same as the state. No bytes go out of the runner. If a run stops
       # before this line, the next run makes the same pages again.
       - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
+
+  # Not internal: the offline check of lib starts it with its name.
+  index-copy:
+    desc: Copy the index file of each directory in RUN/index-real.txt to the page key of that directory, in the bucket
+    cmds:
+      # The page key of a directory with an index file (INDEX_FILES) is one server-side
+      # copy of that file. COPY keeps its Content-Type, and the copy has the same bytes
+      # and ETag. Thus, the URL of the directory serves the upstream file, as its upstream
+      # does. The source is in the bucket, because pages read it from the state that
+      # checkpoint put there. The CLI encodes --copy-source. Thus, the command gives the
+      # key with no change. A key that is encoded first is encoded two times, and the copy
+      # then reads a different key. s3api does not accept --no-progress. Thus, this command does
+      # not use AWS_FLAGS.
+      - >-
+        while IFS="$(printf '\t')" read -r s k; do
+        aws s3api copy-object --bucket {{.BUCKET}} --copy-source "{{.BUCKET}}/$s" --key "$k" --metadata-directive COPY > /dev/null;
+        echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
 
   pages:
     desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied, RUN/index-real.txt for the directories with an index file
@@ -1015,7 +1023,7 @@ tasks:
       # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # With INDEX set, the pages that index made and the keys that it removed.
-      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn under both keys, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn, $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) of them with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # Rows that show only when they have data.
       - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"

@@ -109,6 +109,13 @@ Read that section before you write.
   cause, each line of `.run/index-real.txt` starts with a full key.
 - Do not give `--no-progress` (in `AWS_FLAGS`) to `aws s3api`. Only `aws s3` accepts it.
   `s3api` stops with `Unknown options` (verified, aws-cli 2.36.24).
+- Give `aws s3api copy-object --copy-source` the raw key. The CLI encodes it. A key that is
+  encoded first is encoded two times (`a%20b` goes out as `a%2520b`), and the copy then
+  reads a different key (verified with `aws --debug`, aws-cli 2.36.24).
+- In a check, give `RUN` to a verb as a call var, not as `RUN=...` on the command line. The
+  toolbox sets `RUN` as a global var, and go-task uses the command-line value in some runs
+  only (verified, 3.53.1). For this cause, `offline` starts `copy-cli`, which gives `RUN`
+  to `index-copy` as a call var.
 
 ## Verifying a change
 
