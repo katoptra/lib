@@ -59,9 +59,11 @@ tasks:
       CTAN_FOOT: '<a href="https://ctan.org/tex-archive/%s">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.'
     cmds:
       # list and normalise on a local tree: its two regular files, sorted with byte
-      # collation, and no directory.
+      # collation, and no directory. upstream-dirs.txt gets its two directories, each with
+      # a slash at the end, and not the root.
       - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
       - test "$(cut -f1 {{.RUN}}/upstream.txt | tr '\n' ' ')" = "a/b/f.txt timestamp "
+      - test "$(tr '\n' ' ' < {{.RUN}}/upstream-dirs.txt)" = "a/ a/b/ "
       # The verbs write their files adjacent to the files that they read. Thus, they
       # operate on a copy.
       - rm -rf {{.F}} && cp -R {{.ROOT_DIR}}/fixtures {{.F}}

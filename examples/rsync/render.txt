@@ -23,7 +23,7 @@ echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f /work
 task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
-  rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
+  rc=0; ( TZ=UTC rsync --timeout=300 --contimeout=60 --no-h -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
   case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
   s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
@@ -35,6 +35,10 @@ task: [normalise] awk '
     size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
     print path "\t" size + 0 "\t" mtime }' /work/examples/rsync/.run/listing.txt \
 | LC_ALL=C sort > /work/examples/rsync/.run/upstream.txt
+task: [normalise] awk '
+  /^d/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
+    path = substr($0, RSTART + RLENGTH); if (path != ".") print path "/" }' /work/examples/rsync/.run/listing.txt \
+| LC_ALL=C sort > /work/examples/rsync/.run/upstream-dirs.txt
 task: [normalise] test "$(wc -l < /work/examples/rsync/.run/upstream.txt)" -gt 1
 task: [state] mkdir -p /work/examples/rsync/.run
 task: [pull] rc=0; aws s3 ls s3://example/.state/applied.txt.xz > /dev/null || rc=$?
