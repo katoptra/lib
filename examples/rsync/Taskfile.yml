@@ -14,7 +14,7 @@ vars:
   LIST_FLOOR: 1
   INDEX: '{{.HOST}}.directory.index.html'
   INDEX_FILES: index.html index.htm
-  PAGE_FOOT: 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.'
+  UPSTREAM: https://example.org/pub/
   CANARY: pub/index.html
   FRESH_KEY: timestamp
 includes:
@@ -52,11 +52,12 @@ tasks:
       # A local tree. Here, the daemon-only flags of the engine are a usage error.
       LOCAL: rsync --no-h
       FP: 3505F9E22FF030FE5D9C655A825C376AB4571163
-      # run-pages/want/ is the page set of ctan for that state. It is the same as the
-      # pages that ctan.katoptra.org sends. It has the INDEX of ctan, and a last line with
-      # a link to the directory on ctan.org.
+      # run-pages/want/ is the page set of ctan for that state. It has the INDEX, the
+      # UPSTREAM and the HOST of ctan. Thus, the footer that the engine makes gives the
+      # directory on ctan.org as text, and the address ctan@katoptra.org.
       CTAN_INDEX: ctan.katoptra.org.directory.index.html
-      CTAN_FOOT: '<a href="https://ctan.org/tex-archive/%s">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.'
+      CTAN_HOST: ctan.katoptra.org
+      CTAN_UP: https://ctan.org/tex-archive/
     cmds:
       # list and normalise on a local tree: its two regular files, sorted with byte
       # collation, and no directory. upstream-dirs.txt gets its two directories, each with
@@ -140,9 +141,10 @@ tasks:
       # verify rejects a container that the tlpdb does not identify, independently of its
       # bytes.
       - '! task verify-refuses 2>/dev/null'
-      # run-pages: the new state has a file with & < > in its name, and a directory with a
-      # space in its name. gone/ is not in the new state. pages makes the pages of the
-      # root, a/, a/b/ and a/sp ace/, each with its two keys (the root with one). It also
+      # run-pages: the new state has a file with & < > in its name, a directory with a
+      # space in its name, and a/sp ace/ü%&/, which the URLs encode. gone/ is not in the
+      # new state. pages makes the pages of the root, a/, a/b/, a/sp ace/ and
+      # a/sp ace/ü%&/, each with its two keys (the root with one). It also
       # gives the two keys of gone/ for removal. a/doc/ has index.htm and index.html. Thus,
       # its listing goes only to its key without the slash, and index-real.txt gives
       # index.html, the first name in INDEX_FILES, as the source of its page key. Each byte
@@ -153,10 +155,38 @@ tasks:
       # page, and the root page and the page of e1/ show them. indexed.txt has no stamp
       # (the format before PAGE_FORMAT 2). Thus, pages makes all the pages again, and it
       # still gives the two keys of gone/ for removal. indexed.new starts with the stamp.
-      - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}', UPSTREAM: 'https://ctan.org/tex-archive/'}}
-      - test "$(tr '\n' '|' < {{.F}}/run-pages/index-make.txt)" = "|a/|a/b/|a/doc/|a/sp ace/|e1/|e1/e2/|"
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}', UPSTREAM: '{{.CTAN_UP}}'}}
+      - test "$(tr '\n' '|' < {{.F}}/run-pages/index-make.txt)" = "|a/|a/b/|a/doc/|a/sp ace/|a/sp ace/ü%&/|e1/|e1/e2/|"
       - test -f "{{.F}}/run-pages/staging/e1/e2/{{.CTAN_INDEX}}" && grep -q 'href="e2/"' "{{.F}}/run-pages/staging/e1/{{.CTAN_INDEX}}"
       - head -1 {{.F}}/run-pages/indexed.new | grep -q '^#pages [0-9a-f]\{16\}$'
+      # The page of a/b/:
+      #   - The names are in version sequence: x-2.2, x-2.10, x-2.12, x-2.12.3.
+      #   - A signature or checksum file goes on the row of its file, as a link with its
+      #     suffix, directly after the name. y.exe.sha512.asc goes on the row of y.exe.
+      #   - A suffix file with no file before the suffix keeps its row, with class s.
+      #   - The size is IEC, with the exact bytes in the title. The time is UTC, to the
+      #     minute.
+      #   - The footer gives UPSTREAM and the directory as text, and CONTACT, which comes
+      #     from HOST.
+      # The page of a/sp ace/ü%&/ escapes the name in the heading and encodes it in the URLs.
+      # No page has a script, an image or a link to a different site.
+      - |
+        s={{.F}}/run-pages/staging; p="$s/a/b/{{.CTAN_INDEX}}"
+        test "$(grep -o 'href="x-[^"]*\.tar\.gz"' "$p" | tr '\n' ' ')" = 'href="x-2.2.tar.gz" href="x-2.10.tar.gz" href="x-2.12.tar.gz" href="x-2.12.3.tar.gz" '
+        grep -qF 'x-2.12.3.tar.gz</a><a class="k" href="x-2.12.3.tar.gz.asc" aria-label="x-2.12.3.tar.gz.asc">.asc</a><a class="k" href="x-2.12.3.tar.gz.sig" aria-label="x-2.12.3.tar.gz.sig">.sig</a></td>' "$p"
+        grep -qF 'y.exe</a><a class="k" href="y.exe.sha512" aria-label="y.exe.sha512">.sha512</a><a class="k" href="y.exe.sha512.asc" aria-label="y.exe.sha512.asc">.sha512.asc</a></td>' "$p"
+        test "$(grep -c '">y.exe.sha512' "$p")" -eq 0
+        grep -qF '<tr class="s"><td><a href="orphan.tar.gz.sig">orphan.tar.gz.sig</a></td>' "$p"
+        grep -qF '<tr class="s"><td><a href=".sig">.sig</a></td>' "$p"
+        grep -qF '<td title="1,189,208 bytes">1.1 MiB</td>' "$p"
+        grep -qF '<th>Modified (UTC)</th>' "$p" && grep -qF '<td>2026-08-28 06:00</td>' "$p"
+        grep -qF '<footer>Mirror of https://ctan.org/tex-archive/a/b/. Report a problem to <a href="mailto:ctan@katoptra.org">ctan@katoptra.org</a>.</footer></body></html>' "$p"
+        u="$s/a/sp ace/ü%&/{{.CTAN_INDEX}}"
+        grep -qF '<h1>Index of /a/sp ace/ü%&amp;/</h1>' "$u" && grep -qF '<base href="/a/sp%20ace/%C3%BC%25%26/">' "$u"
+        grep -qF 'tex-archive/a/sp%20ace/%C3%BC%25%26/.' "$u"
+        grep -qF '<p>This directory is empty.</p>' "$s/e1/e2/{{.CTAN_INDEX}}"
+        grep -qF '<p>2 directories, 1 file, 20 B</p>' "$s/{{.CTAN_INDEX}}"
+        ! grep -rlE '<script|<img|href="http' "$s" {{.F}}/run-pages/slash
       - find {{.F}}/run-pages/staging -type d -empty -delete && diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
       - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
       - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
@@ -174,10 +204,22 @@ tasks:
       - |
         r={{.F}}/run-pages-stamp; mkdir -p $r
         cp {{.F}}/run-pages/applied.txt {{.F}}/run-pages/upstream-dirs.txt $r/ && cp {{.F}}/run-pages/indexed.new $r/indexed.txt
-      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}', UPSTREAM: 'https://ctan.org/tex-archive/'}}
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}', UPSTREAM: '{{.CTAN_UP}}'}}
       - test ! -s {{.F}}/run-pages-stamp/index-make.txt
-      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: x, UPSTREAM: 'https://ctan.org/tex-archive/'}}
+      # PAGE_FOOT, when set, is the footer.
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}', UPSTREAM: '{{.CTAN_UP}}', PAGE_FOOT: x}}
       - cmp {{.F}}/run-pages-stamp/index-make.txt {{.F}}/run-pages-stamp/index-dirs.txt
+      - tail -c 64 "{{.F}}/run-pages-stamp/staging/{{.CTAN_INDEX}}" | grep -qF '<footer>x</footer></body></html>'
+      # run-pages-big: one directory with 10,000 files, each with a .sig. The page has the
+      # 10,000 files, each with its signature link, in less than 10 seconds.
+      - |
+        r={{.F}}/run-pages-big; mkdir -p $r; : > $r/indexed.txt; echo big/ > $r/upstream-dirs.txt
+        awk 'BEGIN { for (i = 0; i < 10000; i++) { f = sprintf("big/f-%05d.tar.gz", i); print f "\t1234\t2026/08/28 06:00:00"; print f ".sig\t65\t2026/08/28 06:00:00" } }' \
+          | LC_ALL=C sort > $r/applied.txt; date +%s > $r/t0
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages-big', STAGING: '{{.F}}/run-pages-big/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}', UPSTREAM: '{{.CTAN_UP}}'}}
+      - |
+        r={{.F}}/run-pages-big; test $(( $(date +%s) - $(cat $r/t0) )) -lt 10
+        test "$(grep -c 'class="k"' "$r/staging/big/{{.CTAN_INDEX}}")" -eq 10000
       # CTYPE gives the full value of the header, with its charset.
       - "test \"$(printf 'HTTP/2 200\\r\\nContent-Type: text/plain; charset=utf-8\\r\\n' | {{.CTYPE}})\" = 'text/plain; charset=utf-8'"
       # run-smoke: an hour with one change only, timestamp, and one new page only, the

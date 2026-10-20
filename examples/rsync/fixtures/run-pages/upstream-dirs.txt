@@ -2,5 +2,6 @@ a/
 a/b/
 a/doc/
 a/sp ace/
+a/sp ace/ü%&/
 e1/
 e1/e2/
