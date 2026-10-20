@@ -33,8 +33,13 @@
 #       between each two names. When a directory has such a file, its page key is a copy
 #       of the first one, and its key without the slash keeps the listing. An empty value
 #       gives a listing for each directory.
-#     - PAGE_FOOT: the HTML at the end of each page, with %s for the encoded path of the
-#       directory. An empty value gives none.
+#     - UPSTREAM: the URL of the upstream tree. The footer of each page gives it as text,
+#       with the path of the directory. An empty value gives a footer with no upstream.
+#     - CONTACT: the e-mail address for problem reports, in the footer of each page. An
+#       empty value gives the first label of HOST, "@" and the other labels of HOST.
+#     - PAGE_FOOT: HTML for the footer of each page, in place of the footer from UPSTREAM
+#       and CONTACT, with %s for the encoded path of the directory. An empty value gives
+#       the footer from UPSTREAM and CONTACT.
 #     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
 #       CANARY is set, smoke reads the file through the domain as a Perl client.
 #     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
@@ -79,8 +84,12 @@ vars:
   URL: https://{{.HOST}}
   # The listing of the bucket. The key is not an upstream path.
   STATE: .state/applied.txt.xz
-  # The state as the directory pages showed it the last time.
+  # The page state as the directory pages showed it the last time, after a stamp line.
   INDEXED: .state/indexed.txt.xz
+  # The format of the directory pages. Increase it at each change to the HTML or the style
+  # of a page. The stamp in INDEXED includes it. Thus, when a mirror gets a release with a
+  # new format, its next run makes all of its pages again.
+  PAGE_FORMAT: '2'
   # Batches for each run. The remaining batches chain the next run.
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'
   # Seconds. A retry waits RETRY_S * 2^i, plus jitter.
@@ -196,12 +205,15 @@ tasks:
       # not upstream, rsync reports the symlink and ignores it. rsync then exits 23, but
       # the listing has all the other files. retry accepts exit 23. LIST_FLOOR, not the
       # exit code, finds a truncated listing.
+      #
+      # rsync shows each time in the time zone of the container. TZ=UTC makes each time
+      # UTC, and the directory pages show the times as UTC.
       - task: retry
-        vars: {CMD: '{{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
+        vars: {CMD: 'TZ=UTC {{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
       - {task: normalise}
 
   normalise:
-    desc: RUN/listing.txt (rsync --list-only) to RUN/upstream.txt; every regular file, as "path TAB size TAB mtime", byte-sorted
+    desc: RUN/listing.txt (rsync --list-only) to RUN/upstream.txt, every regular file as "path TAB size TAB mtime", and RUN/upstream-dirs.txt, every directory but the root as "path/"; both byte-sorted
     set: [pipefail]
     cmds:
       # The size column can contain commas (rsync 3.x), or it can be empty for an empty
@@ -220,6 +232,14 @@ tasks:
             size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
             print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
         | LC_ALL=C sort > {{.RUN}}/upstream.txt
+      # This command writes the directories of upstream, each with a slash at the end. The
+      # root (".") is not in the file. pages makes a page for each directory, also for a
+      # directory with no file.
+      - >-
+        awk '
+          /^d/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
+            path = substr($0, RSTART + RLENGTH); if (path != ".") print path "/" }' {{.RUN}}/listing.txt \
+        | LC_ALL=C sort > {{.RUN}}/upstream-dirs.txt
       # A truncated listing must not become a list of deletions. LIST_FLOOR is a line
       # count, approximately 90% of the usual size of the listing. A correct listing
       # always has more lines. When LIST_FLOOR is not set, there is no guard.
@@ -702,15 +722,16 @@ tasks:
       #   - only when INDEX is set, the directory pages that an index hook writes to two
       #     keys.
       # One key of a page has the INDEX suffix, which identifies it. The other key is the
-      # path of a directory of the state, without the slash at the end. It is the same as
-      # an upstream path. Thus, the list is the directory set of the state. When upstream
-      # changes a directory into a file, the path goes out of the set, and reconcile
-      # examines it as a file.
+      # path of a directory of the state or of upstream, without the slash at the end. It
+      # is the same as an upstream path. Thus, the list is the directory set of the page
+      # state, which includes the directories with no file. When upstream changes a
+      # directory into a file, the path goes out of the set, and reconcile examines it as
+      # a file.
       #
       # Without INDEX, the two lists are empty. If not, the suffix becomes "/", and
       # reconcile keeps each key that ends in "/".
       - >-
-        {{if .INDEX}}{{.ANCESTORS}} {{.RUN}}/applied.txt
+        {{if .INDEX}}cat {{.RUN}}/applied.txt {{.RUN}}/upstream-dirs.txt | {{.ANCESTORS}}
         | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt{{else}}: > {{.RUN}}/index-keys.txt{{end}}
       - >-
         cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/'{{if .OWN}} | grep -vxF -f <(printf '%s\n' {{.OWN}}){{end}}
@@ -722,7 +743,7 @@ tasks:
 
   # ---- after the bytes moved ----
   index:
-    desc: 'Hook. With INDEX set: redraw the directory pages this run changed and publish them; INDEXED, the state the pages last showed, moves forward only after they landed. A mirror with a landing page of its own replaces it'
+    desc: 'Hook. With INDEX set: redraw the directory pages this run changed and publish them; INDEXED, the stamp and the page state the pages last showed, moves forward only after they landed. A mirror with a landing page of its own replaces it'
     status: ['test -z "{{.INDEX}}"']
     set: [pipefail]
     vars:
@@ -747,11 +768,11 @@ tasks:
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type 'text/html; charset=utf-8' "$d" {{.S3}}/; done
       - {task: index-copy}
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
-      # At this point, the pages show the state, and the bucket holds that state, because
-      # checkpoint put it there before this verb started. One server-side copy makes
-      # INDEXED the same as the state. No bytes go out of the runner. If a run stops
-      # before this line, the next run makes the same pages again.
-      - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
+      # At this point, the pages show the page state, and the bucket holds the state,
+      # because checkpoint put it there before this verb started. INDEXED gets
+      # indexed.new: the stamp, then the page state. If a run stops before this line, the
+      # next run makes the same pages again.
+      - {task: push, vars: {FILE: '{{.RUN}}/indexed.new', KEY: '{{.INDEXED}}'}}
 
   # Not internal: the offline check of lib starts it with its name.
   index-copy:
@@ -771,7 +792,7 @@ tasks:
         echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
 
   pages:
-    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied, RUN/index-real.txt for the directories with an index file
+    desc: RUN/indexed.txt against the page state (RUN/applied.txt and RUN/upstream-dirs.txt) -> a page under both of its keys for every directory a changed line touches, or for every directory when the stamp differs; RUN/index-gone.txt for the keys of directories that upstream removed; RUN/index-real.txt for the directories with an index file; RUN/indexed.new for INDEXED
     set: [pipefail]
     vars:
       # The verb writes each page to two keys:
@@ -787,9 +808,25 @@ tasks:
       SLASH: '{{.RUN}}/slash'
     cmds:
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
+      # The page state is the state and a line "dir/ TAB TAB" for each directory of
+      # upstream. Thus, a directory with no file also gets a page, and the page of its
+      # parent shows it.
+      - >-
+        { cat {{.RUN}}/applied.txt; awk '{ print $0 "\t\t" }' {{.RUN}}/upstream-dirs.txt; }
+        | LC_ALL=C sort > {{.RUN}}/page-state.txt
+      # The stamp identifies the bytes of the pages: PAGE_FORMAT and each var that changes
+      # a page. INDEXED starts with the stamp of the pages that it records. If INDEXED has
+      # no stamp line, the stamps do not agree.
+      - >-
+        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} {{shellQuote (.INDEX_FILES | default "")}}
+        {{shellQuote (.PAGE_FOOT | default "")}} {{shellQuote (.UPSTREAM | default "")}} {{shellQuote (.CONTACT | default "")}}
+        {{shellQuote .HOST}} | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > {{.RUN}}/index-stamp.txt
+      - awk 'NR == 1 && /^#pages / { next } { print }' {{.RUN}}/indexed.txt > {{.RUN}}/index-old.txt
       # A page changes when a file in its directory, or a directory below it, is added,
       # changed or removed. Thus, the verb makes the page of each ancestor of each changed
-      # line again.
+      # line again. When the stamps do not agree, each directory of the page state is also
+      # dirty. The changed lines stay in the set. Thus, a directory that upstream removed
+      # in this run still goes to index-gone.
       #
       # ponytail: approximately five pages for each changed directory. Frequently, one
       # page is sufficient. Ceiling: Class A operations, some hundreds each day, of the
@@ -797,14 +834,19 @@ tasks:
       # the two files. Then make a parent page again only for a new child or a removed
       # child.
       - >-
-        LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
+        { LC_ALL=C comm -3 {{.RUN}}/index-old.txt {{.RUN}}/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }';
+        head -1 {{.RUN}}/indexed.txt | cmp -s - {{.RUN}}/index-stamp.txt || cat {{.RUN}}/page-state.txt; }
         | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
-      - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      - '{{.ANCESTORS}} {{.RUN}}/page-state.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      - cat {{.RUN}}/index-stamp.txt {{.RUN}}/page-state.txt > {{.RUN}}/indexed.new
       # When a directory is removed, the verb removes its two keys. The root has no
-      # slashless key.
+      # slashless key. When upstream changes a directory into a file with the same name,
+      # the slashless key is that file. Thus, the last awk keeps each key that is a file
+      # of the page state.
       - >-
         LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
-        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > {{.RUN}}/index-gone.txt
+        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }'
+        | awk -F'\t' 'NR == FNR { f[$1] = 1; next } !($0 in f)' {{.RUN}}/page-state.txt - > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
@@ -823,17 +865,21 @@ tasks:
         awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
           for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
         | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
-      # The verb gets the entries, "dir TAB d|f TAB name TAB size TAB mtime", from the
-      # state: the objects in the bucket, not upstream. After the sort, the lines of a
-      # directory are together, with its subdirectories first. Thus, the verb writes each
-      # page one time and closes it. The verb percent-encodes each name in href and
-      # HTML-escapes it in text.
+      # The verb gets the entries, "dir TAB d|e|f TAB name TAB size TAB mtime", from the
+      # page state: the files in the bucket and the directories of upstream. A line "dir/"
+      # of the page state gives an e entry for that directory. The e entry opens the page
+      # and adds no row. Thus, a directory with no file also gets a page. After the sort,
+      # the lines of a directory are together, with its subdirectories first and the names
+      # in version sequence (sort -V: x-2.9 before x-2.10). Thus, the verb writes each page
+      # one time and closes it. The verb percent-encodes each name in href and HTML-escapes
+      # it in text.
       #
-      # The verb makes the full page, and then writes it to its two keys. Thus, the two
-      # keys have the same bytes. With the base href, one document is correct for /dir/
-      # and for /dir. Without it, a relative href in the second resolves against the
-      # parent. PAGE_FOOT is at the end of each page, with %s for the encoded path of the
-      # directory. When PAGE_FOOT is empty, the table is the last part of the page.
+      # The verb keeps the rows of a directory in arrays. At shut, it writes the page to its
+      # two keys with the same calls. Thus, the two keys have the same bytes. With the base
+      # href, one document is correct for /dir/ and for /dir. Without it, a relative href in
+      # the second resolves against the parent. The footer is PAGE_FOOT, with %s for the
+      # encoded path of the directory. When PAGE_FOOT is empty, the verb makes the footer
+      # from UPSTREAM and CONTACT. CONTACT gets its default from HOST.
       #
       # rank gives the position of each name in INDEX_FILES. real is the index file of the
       # open directory with the lowest rank. Without a real, shut writes the page key.
@@ -842,25 +888,64 @@ tasks:
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
           { n = split($1, c, "/"); d = ""
             for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
-            if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
-        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
-          -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" '{{.URLENC}}
-          BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i }
+            if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/page-state.txt \
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
+          -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" -v U={{shellQuote (.UPSTREAM | default "")}} \
+          -v C={{shellQuote (.CONTACT | default "")}} -v H="{{.HOST}}" '{{.URLENC}}
+          BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
+            if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1)
+            css = ":root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}"
+            css = css "@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}"
+            css = css "body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}"
+            css = css "h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}"
+            css = css "table{width:100%;border-collapse:collapse;font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+            css = css "th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;white-space:nowrap}"
+            css = css "td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}td:first-child{overflow-wrap:anywhere;width:100%}"
+            css = css "td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}th:last-child,td:last-child{text-align:right}"
+            css = css "tr:hover td{background:var(--hov)}a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}.s a{color:var(--mut)}"
+            css = css ".k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}"
+            css = css ".k:hover{color:var(--a);border-color:var(--a);text-decoration:none}"
+            css = css "footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}"
+            css = css "footer a{color:inherit;text-decoration:underline}@media (max-width:36rem){thead{display:none}"
+            css = css "tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}td{border:0;padding:.1rem .5rem}"
+            css = css "td:first-child{grid-column:1/-1;padding-top:.45rem}td+td{padding-bottom:.45rem;font-size:.8rem}}" }
           function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
-          function open(d) { cur = d; live = 1; real = ""
-            p = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>\n"
-            p = p "<base href=\"/" enc(d) "\">\n"
-            p = p "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>\n"
-            p = p "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>\n"
-            if (d != "") p = p "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n" }
-          function shut(  f, b, k, e) { p = p "</table>" (F == "" ? "" : "<p>" sprintf(F, enc(cur)) "</p>") "</body></html>\n"
-            if (real == "") { f = S cur I; printf("%s", p) > f; close(f) } else print cur real "\t" cur I > X
-            if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
-              f = R k "/" b; printf("%s", p) > f; close(f) } }
+          function grp(n,  s, o) { s = sprintf("%.0f", n); o = ""
+            while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } return s o }
+          function iec(n,  u, i) { if (n < 1024) return sprintf("%.0f B", n)
+            split("KiB MiB GiB TiB", u, " "); n /= 1024; i = 1; while (n >= 1024 && i < 4) { n /= 1024; i++ }
+            return sprintf(n < 10 ? "%.1f %s" : "%.0f %s", n, u[i]) }
+          function ymd(t) { gsub(/\//, "-", t); return substr(t, 1, 16) }
+          function foot(  t) { if (F != "") return "<footer>" sprintf(F, enc(cur)) "</footer>"
+            t = (U == "" ? "" : "Mirror of " esc(U) enc(cur) ".")
+            if (C != "") t = t (t == "" ? "" : " ") "Report a problem to <a href=\"mailto:" esc(C) "\">" esc(C) "</a>."
+            return (t == "" ? "" : "<footer>" t "</footer>") }
+          function open(d) { cur = d; live = 1; real = ""; nd = 0; nfl = 0; tot = 0; split("", has) }
+          function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
+          function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
+            for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
+              while (match(r, /\.(sig|asc|sign|sha256|sha512)$/)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
+              if (x != "") { fold[i] = 1
+                links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
+            c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
+            if (nfl) c = c (c == "" ? "" : ", ") grp(nfl) (nfl == 1 ? " file" : " files") ", " iec(tot)
+            if (c == "") c = "This directory is empty."
+            fa = S cur I; if (real != "") print cur real "\t" cur I > X
+            if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/"); fb = R k "/" b }
+            w("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Index of /" esc(cur) "</title>\n")
+            w("<base href=\"/" enc(cur) "\">\n<style>" css "</style></head><body>\n<h1>Index of /" esc(cur) "</h1><p>" c "</p>\n")
+            w("<table><thead><tr><th>Name</th><th>Modified (UTC)</th><th>Size</th></tr></thead><tbody>\n")
+            if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
+            for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
+            for (i = 1; i <= nfl; i++) if (!(i in fold))
+              w("<tr" (fname[i] ~ /\.(sig|asc|sign|sha256|sha512)$/ ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
+            w("</tbody></table>" foot() "</body></html>\n")
+            if (real == "") close(fa); if (cur != "") close(fb) }
           !live || $1 != cur { if (live) shut(); open($1) }
-          $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
+          $2 == "e" { next }
+          $2 == "d" { dname[++nd] = $3; next }
           ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
-          { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }
+          { fname[++nfl] = $3; fsize[nfl] = $4; ftime[nfl] = $5; has[$3] = 1; tot += $4 }
           END { if (live) shut() }'
 
   smoke:

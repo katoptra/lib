@@ -335,7 +335,7 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | Verb | Function |
 |---|---|
 | `pipeline`, `plan-pipeline` | The verbs in the diagram, in sequence, and the read-only half: `clock`, `list`, `state`, `diff`, `split` |
-| `list` | `rsync -rL --list-only` of `SOURCE`, with `FILTER`. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
+| `list` | `rsync -rL --list-only` of `SOURCE`, with `FILTER`. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, and each directory to `.run/upstream-dirs.txt` as `path/`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
 | `state` | Downloads `.state/applied.txt.xz` from the bucket. If the file is missing, `state` tells `rebuild` to make it |
 | `rebuild` | Makes a listing of the bucket. The new state has each key that the bucket contains with the number of bytes that upstream gives. It uploads the new state as one PutObject |
 | `diff` | Writes `changed.txt`, `deleted.txt` and `paths.txt`. `changed.txt` has the lines that upstream has and the state does not have. It also has the file of each changed signed sha512. `deleted.txt` has the paths that the state has and upstream does not have |
@@ -348,9 +348,9 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `label` | Writes `.run/labels.txt`: the Content-Type of each file in staging, from its name and its first KiB. A text type gets a charset if the file is UTF-8. Refer to [Content types](#content-types) |
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
-| `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the state. Then it runs `reconciled` |
-| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that became empty. Then it moves `.state/indexed.txt.xz` to the new state. A mirror with a different landing page overrides `index` |
-| `pages` | Writes a page for each directory that the run changed, from the state, into staging. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
+| `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the page state. Then it runs `reconciled` |
+| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that upstream removed. Then it writes the stamp and the page state to `.state/indexed.txt.xz`. A mirror with a different landing page overrides `index` |
+| `pages` | Writes a page for each directory that the run changed, from the page state, into staging. If the stamp of INDEXED does not agree, it writes a page for each directory. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
 | `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
 | `smoke-mirror` | A hook, empty here. A mirror with more items to read back writes it |
@@ -484,8 +484,9 @@ continue to get the last good copy. After the engine uploads the batch, `smoke` 
 #### Directory pages
 
 R2 serves no directory listings. If `INDEX` has a value, `index` writes a page for each
-directory that a run changed. It writes the pages from the state, not from upstream, and
-each page has two keys:
+directory that a run changed. It writes the pages from the page state: the files of the
+state and the directories of the upstream listing. Thus, a directory with no file also gets
+a page. Each page has two keys:
 
 - `<dir>/<INDEX>`: a Transform Rule of the zone serves this key for `/dir/`.
 - `<dir>`, with no slash at the end: this key serves `/dir`. A mirror on a file system
@@ -497,6 +498,29 @@ A `<base href>` lets one document serve the two URLs. A file system cannot conta
 depth, and `index` uploads one tree at a time. `index` gives these keys
 `--content-type 'text/html; charset=utf-8'`. Without it, a key with no suffix gets
 `binary/octet-stream`, and a browser downloads the page and does not show it.
+
+Each page shows these items:
+
+- The path, and a line with the number of directories and files and the total size of the
+  files. A directory with no item shows "This directory is empty."
+- A table with the name, the time and the size of each item. The subdirectories are first.
+  The names are in version sequence (`sort -V`). Thus, `x-2.9` is before `x-2.10`.
+- The time is the mtime of upstream, in UTC, to the minute. The size is in B, KiB, MiB, GiB
+  or TiB. The title of the cell gives the exact number of bytes.
+- A signature file or a checksum file (`.sig`, `.asc`, `.sign`, `.sha256` or `.sha512`)
+  is a link on the row of its file. The link text is the suffix, directly after the name.
+  Thus, a search of the page for the full name finds it. A file with such a suffix and no
+  such file has a row of its own.
+- The footer.
+
+The style of the page is in the page. It has a light and a dark color scheme, and a layout
+for a narrow screen. The page has no script, no image and no link to a different site,
+other than the `mailto:` address in the footer.
+
+The engine makes the footer from `UPSTREAM` and `CONTACT`: "Mirror of
+`<UPSTREAM><dir>`. Report a problem to `<CONTACT>`." The address of upstream is text, not
+a link. GNU tells its mirrors to put no link in a header or a footer, other than a link for
+problem reports. If `PAGE_FOOT` has a value, the footer is that HTML.
 
 `INDEX_FILES` gives the names of the index files, in sequence, for example
 `index.html index.htm`. A directory can contain a file with one of these names. Then:
@@ -514,11 +538,13 @@ it.
 No page goes into the state. `merge` adds to the state only the files that are in staging
 and also in the batch, and a page is in no batch.
 
-`.state/indexed.txt.xz` records the state that the pages showed last. If a run stops before
-it moves that file, the next run writes the same pages again. If you delete the file, the
-next run writes all the pages again, one time. Thus, the pages of the directories that did
-not change also get a change to the HTML of the page or to `PAGE_FOOT`. `reconcile` does
-not delete the two keys.
+`.state/indexed.txt.xz` records the page state that the pages showed last, after a stamp
+line. The stamp is a hash of `PAGE_FORMAT` and of the vars that change a page: `INDEX`,
+`INDEX_FILES`, `PAGE_FOOT`, `UPSTREAM`, `CONTACT` and `HOST`. When the stamp does not
+agree, the run writes all the pages again, one time. Thus, a change to one of these vars,
+or a release with a new `PAGE_FORMAT`, gets to each page. If a run stops before it writes
+that file, the next run writes the same pages again. `reconcile` does not delete the two
+keys of a directory of the page state.
 
 The rsync mirrors of katoptra use one `INDEX`, `katoptra.org.directory.index.html`. Thus,
 the Transform Rules of the zone for their hosts use one rewrite:
@@ -585,9 +611,11 @@ inline default, and a mirror sets only the vars that are different:
 | `TL`, `TL_KEY` | Empty | A signed TeX Live subtree, and the fingerprint of the key that signs it. If they are empty, the engine does no signature checks |
 | `FILTER` | Empty | rsync filter arguments that make the listing smaller, for a mirror of a subtree |
 | `OWN` | Empty | Keys at the root of the bucket that the mirror writes, not upstream. A space is between two keys. `reconcile` does not delete them |
-| `INDEX` | Empty | The key suffix of the directory pages. If it has a value, `index` writes the pages. `reconcile` does not delete the pages, or a key with the name of a directory of the state |
+| `INDEX` | Empty | The key suffix of the directory pages. If it has a value, `index` writes the pages. `reconcile` does not delete the pages, or a key with the name of a directory of the page state |
 | `INDEX_FILES` | Empty | The names of the index files, in sequence. A space is between two names. The page key of a directory with such a file is a copy of the first one. Refer to [Directory pages](#directory-pages) |
-| `PAGE_FOOT` | Empty | The HTML at the end of each directory page. `%s` is the encoded path of the directory, and `%%` gives one `%` |
+| `UPSTREAM` | Empty | The URL of the upstream tree, with a slash at the end. The footer of each directory page gives it as text, with the path of the directory. If it is empty, the footer does not give upstream |
+| `CONTACT` | From `HOST` | The e-mail address for problem reports, in the footer of each directory page. The default is the first label of `HOST`, `@`, and the other labels: `gnu.katoptra.org` gives `gnu@katoptra.org` |
+| `PAGE_FOOT` | Empty | HTML for the footer of each directory page, in place of the footer from `UPSTREAM` and `CONTACT`. `%s` is the encoded path of the directory, and `%%` gives one `%` |
 | `CANARY` | Empty | A file that `smoke` reads from the domain as a Perl client, and compares with the bucket, byte for byte. All files can be the canary. A file with `http://` links (not `https://`) or `mailto:` addresses also finds the HTML rewriters of the zone. The path must have no character that a URL encodes |
 | `FRESH_KEY` | Empty | A file in which upstream records its clock, as Unix time or as `YYYY-MM-DD-HH-MM` (the format of CTAN). If it has a value, `fresh` stops the run when the clock is more than `FRESH_HOURS` before the time of the run |
 | `FRESH_HOURS` | 24 | Hours. This value is less than 28 hours: at 28 hours, the mirror checks of GNU and CTAN show a problem |
@@ -667,9 +695,11 @@ These procedures repair other problems:
   reconcile finds that the key is missing, and the subsequent run fetches it again. Do not
   edit the state manually to get the key back before the next reconcile. An error in the
   state can make the engine delete or fetch the incorrect files.
-- **Write all directory pages again.** Use `aws s3 rm s3://<BUCKET>/.state/indexed.txt.xz`.
-  The next run writes the page of each directory at its two keys. This procedure is safe:
-  it does not change the files in the bucket.
+- **Write all directory pages again.** Change a var of the stamp, or increase
+  `PAGE_FORMAT` in a release. The next run writes the page of each directory at its two
+  keys, and it removes the keys of each directory that upstream removed. Do not delete
+  `.state/indexed.txt.xz` to do this. Without that file, the run cannot find a directory
+  that upstream removed, and the page of that directory stays in the bucket.
 - **A directory URL gives 404.** The page is at its key, with or without the zone rule. Use
   `curl -sI https://<HOST>/<dir>/<INDEX>`. If this command gives 200 and the directory URL
   does not, the Transform Rule is missing, or its scope is not correct.
@@ -905,7 +935,7 @@ engine.
 |---|---|---|
 | rsync | Each path of upstream, at the root | The mirror. A public domain serves the bucket |
 | rsync | `.state/applied.txt.xz` | The state: the keys that the bucket contains, with the length and the mtime of upstream |
-| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | The state that the directory pages showed last, and the pages with their two keys. With `INDEX_FILES`, `<dir>/<INDEX>` can be a copy of an index file |
+| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | The stamp and the page state that the directory pages showed last, and the pages with their two keys. With `INDEX_FILES`, `<dir>/<INDEX>` can be a copy of an index file |
 | rsync, a key of the mirror | `index.html` | The landing page of tlnet. `reconcile` does not delete it, because it is in `OWN` |
 | proton | `.state/session.tar.age` | The CLI session, encrypted. This is the only key |
 | A mirror with its pipeline | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | The state of dropbox and its copies with a date. A lifecycle rule of the bucket deletes the history after a time |
@@ -1203,7 +1233,7 @@ The other public mirrors have these structures:
   of `includes:`. It writes an `index` that uploads its landing page, and a `report-mirror`
   with its row.
 - A mirror with directories that a browser can show, for example ctan, gnu and nongnu, adds
-  `INDEX` and `PAGE_FOOT` to its root vars. If its upstream serves index files, it also
+  `INDEX` and `UPSTREAM` to its root vars. If its upstream serves index files, it also
   adds `INDEX_FILES`. Its host must be in the host list of the Transform Rule of
   [Directory pages](#directory-pages). The engine does all the other work.
 
