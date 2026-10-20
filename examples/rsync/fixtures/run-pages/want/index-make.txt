@@ -3,3 +3,5 @@ a/
 a/b/
 a/doc/
 a/sp ace/
+e1/
+e1/e2/

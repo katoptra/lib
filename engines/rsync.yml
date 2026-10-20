@@ -79,8 +79,12 @@ vars:
   URL: https://{{.HOST}}
   # The listing of the bucket. The key is not an upstream path.
   STATE: .state/applied.txt.xz
-  # The state as the directory pages showed it the last time.
+  # The page state as the directory pages showed it the last time, after a stamp line.
   INDEXED: .state/indexed.txt.xz
+  # The format of the directory pages. Increase it at each change to the HTML or the style
+  # of a page. The stamp in INDEXED includes it. Thus, when a mirror gets a release with a
+  # new format, its next run makes all of its pages again.
+  PAGE_FORMAT: '2'
   # Batches for each run. The remaining batches chain the next run.
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'
   # Seconds. A retry waits RETRY_S * 2^i, plus jitter.
@@ -713,15 +717,16 @@ tasks:
       #   - only when INDEX is set, the directory pages that an index hook writes to two
       #     keys.
       # One key of a page has the INDEX suffix, which identifies it. The other key is the
-      # path of a directory of the state, without the slash at the end. It is the same as
-      # an upstream path. Thus, the list is the directory set of the state. When upstream
-      # changes a directory into a file, the path goes out of the set, and reconcile
-      # examines it as a file.
+      # path of a directory of the state or of upstream, without the slash at the end. It
+      # is the same as an upstream path. Thus, the list is the directory set of the page
+      # state, which includes the directories with no file. When upstream changes a
+      # directory into a file, the path goes out of the set, and reconcile examines it as
+      # a file.
       #
       # Without INDEX, the two lists are empty. If not, the suffix becomes "/", and
       # reconcile keeps each key that ends in "/".
       - >-
-        {{if .INDEX}}{{.ANCESTORS}} {{.RUN}}/applied.txt
+        {{if .INDEX}}cat {{.RUN}}/applied.txt {{.RUN}}/upstream-dirs.txt | {{.ANCESTORS}}
         | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt{{else}}: > {{.RUN}}/index-keys.txt{{end}}
       - >-
         cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/'{{if .OWN}} | grep -vxF -f <(printf '%s\n' {{.OWN}}){{end}}
@@ -758,11 +763,11 @@ tasks:
         aws s3 cp {{.AWS_FLAGS}} --recursive --content-type 'text/html; charset=utf-8' "$d" {{.S3}}/; done
       - {task: index-copy}
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
-      # At this point, the pages show the state, and the bucket holds that state, because
-      # checkpoint put it there before this verb started. One server-side copy makes
-      # INDEXED the same as the state. No bytes go out of the runner. If a run stops
-      # before this line, the next run makes the same pages again.
-      - aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.S3}}/{{.INDEXED}}
+      # At this point, the pages show the page state, and the bucket holds the state,
+      # because checkpoint put it there before this verb started. INDEXED gets
+      # indexed.new: the stamp, then the page state. If a run stops before this line, the
+      # next run makes the same pages again.
+      - {task: push, vars: {FILE: '{{.RUN}}/indexed.new', KEY: '{{.INDEXED}}'}}
 
   # Not internal: the offline check of lib starts it with its name.
   index-copy:
@@ -798,9 +803,25 @@ tasks:
       SLASH: '{{.RUN}}/slash'
     cmds:
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
+      # The page state is the state and a line "dir/ TAB TAB" for each directory of
+      # upstream. Thus, a directory with no file also gets a page, and the page of its
+      # parent shows it.
+      - >-
+        { cat {{.RUN}}/applied.txt; awk '{ print $0 "\t\t" }' {{.RUN}}/upstream-dirs.txt; }
+        | LC_ALL=C sort > {{.RUN}}/page-state.txt
+      # The stamp identifies the bytes of the pages: PAGE_FORMAT and each var that changes
+      # a page. INDEXED starts with the stamp of the pages that it records. The state of
+      # an earlier release has no stamp.
+      - >-
+        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} {{shellQuote (.INDEX_FILES | default "")}}
+        {{shellQuote (.PAGE_FOOT | default "")}} {{shellQuote (.UPSTREAM | default "")}} {{shellQuote (.CONTACT | default "")}}
+        {{shellQuote .HOST}} | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > {{.RUN}}/index-stamp.txt
+      - awk 'NR == 1 && /^#pages / { next } { print }' {{.RUN}}/indexed.txt > {{.RUN}}/index-old.txt
       # A page changes when a file in its directory, or a directory below it, is added,
       # changed or removed. Thus, the verb makes the page of each ancestor of each changed
-      # line again.
+      # line again. When the stamps do not agree, each directory of the page state is also
+      # dirty. The changed lines stay in the set. Thus, a directory that upstream removed
+      # in this run still goes to index-gone.
       #
       # ponytail: approximately five pages for each changed directory. Frequently, one
       # page is sufficient. Ceiling: Class A operations, some hundreds each day, of the
@@ -808,9 +829,11 @@ tasks:
       # the two files. Then make a parent page again only for a new child or a removed
       # child.
       - >-
-        LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
+        { LC_ALL=C comm -3 {{.RUN}}/index-old.txt {{.RUN}}/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }';
+        head -1 {{.RUN}}/indexed.txt | cmp -s - {{.RUN}}/index-stamp.txt || cat {{.RUN}}/page-state.txt; }
         | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
-      - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      - '{{.ANCESTORS}} {{.RUN}}/page-state.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      - cat {{.RUN}}/index-stamp.txt {{.RUN}}/page-state.txt > {{.RUN}}/indexed.new
       # When a directory is removed, the verb removes its two keys. The root has no
       # slashless key.
       - >-
@@ -834,11 +857,14 @@ tasks:
         awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
           for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
         | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
-      # The verb gets the entries, "dir TAB d|f TAB name TAB size TAB mtime", from the
-      # state: the objects in the bucket, not upstream. After the sort, the lines of a
-      # directory are together, with its subdirectories first. Thus, the verb writes each
-      # page one time and closes it. The verb percent-encodes each name in href and
-      # HTML-escapes it in text.
+      # The verb gets the entries, "dir TAB d|e|f TAB name TAB size TAB mtime", from the
+      # page state: the files in the bucket and the directories of upstream. A line "dir/"
+      # of the page state gives an e entry for that directory. The e entry opens the page
+      # and adds no row. Thus, a directory with no file also gets a page. After the sort,
+      # the lines of a directory are together, with its subdirectories first and the names
+      # in version sequence (sort -V: x-2.9 before x-2.10). Thus, the verb writes each page
+      # one time and closes it. The verb percent-encodes each name in href and HTML-escapes
+      # it in text.
       #
       # The verb makes the full page, and then writes it to its two keys. Thus, the two
       # keys have the same bytes. With the base href, one document is correct for /dir/
@@ -853,8 +879,8 @@ tasks:
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
           { n = split($1, c, "/"); d = ""
             for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
-            if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
-        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
+            if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/page-state.txt \
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
           -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" '{{.URLENC}}
           BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i }
           function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
@@ -869,6 +895,7 @@ tasks:
             if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
               f = R k "/" b; printf("%s", p) > f; close(f) } }
           !live || $1 != cur { if (live) shut(); open($1) }
+          $2 == "e" { next }
           $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
           ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
           { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }

@@ -148,11 +148,36 @@ tasks:
       # index.html, the first name in INDEX_FILES, as the source of its page key. Each byte
       # must agree with want/. staging keeps the empty directory a/doc/, which git cannot
       # keep in want/. The upload sends no empty directory.
-      - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}'}}
+      #
+      # upstream-dirs.txt also has e1/ and e1/e2/, two directories with no file. Each gets a
+      # page, and the root page and the page of e1/ show them. indexed.txt has no stamp
+      # (the format before PAGE_FORMAT 2). Thus, pages makes all the pages again, and it
+      # still gives the two keys of gone/ for removal. indexed.new starts with the stamp.
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}', UPSTREAM: 'https://ctan.org/tex-archive/'}}
+      - test "$(tr '\n' '|' < {{.F}}/run-pages/index-make.txt)" = "|a/|a/b/|a/doc/|a/sp ace/|e1/|e1/e2/|"
+      - test -f "{{.F}}/run-pages/staging/e1/e2/{{.CTAN_INDEX}}" && grep -q 'href="e2/"' "{{.F}}/run-pages/staging/e1/{{.CTAN_INDEX}}"
+      - head -1 {{.F}}/run-pages/indexed.new | grep -q '^#pages [0-9a-f]\{16\}$'
       - find {{.F}}/run-pages/staging -type d -empty -delete && diff -r {{.F}}/run-pages/want/staging {{.F}}/run-pages/staging
       - diff -r {{.F}}/run-pages/want/slash {{.F}}/run-pages/slash
       - cmp {{.F}}/run-pages/want/index-make.txt {{.F}}/run-pages/index-make.txt && cmp {{.F}}/run-pages/want/index-gone.txt {{.F}}/run-pages/index-gone.txt
-      - cmp {{.F}}/run-pages/want/index-real.txt {{.F}}/run-pages/index-real.txt
+      - cmp {{.F}}/run-pages/want/index-real.txt {{.F}}/run-pages/index-real.txt && cmp {{.F}}/run-pages/want/indexed.new {{.F}}/run-pages/indexed.new
+      # smoke reads the page of the last line of index-make.txt, e1/e2/, which has no file.
+      # The page must be in staging. fresh then reads timestamp, as in run-smoke, with its
+      # size in upstream.txt.
+      - >-
+        r={{.F}}/run-pages; date -u +%s > $r/staging/timestamp &&
+        printf 'timestamp\t%s\t-\n' "$(wc -c < $r/staging/timestamp | tr -d ' ')" > $r/upstream.txt
+      - {task: smoke, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', URL: 'file://{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}'}}
+      # run-pages-stamp: INDEXED is the indexed.new of run-pages. With the same vars, the
+      # stamp agrees, and pages makes no page. With a different PAGE_FOOT, the stamp does
+      # not agree, and pages makes the page of each directory again.
+      - |
+        r={{.F}}/run-pages-stamp; mkdir -p $r
+        cp {{.F}}/run-pages/applied.txt {{.F}}/run-pages/upstream-dirs.txt $r/ && cp {{.F}}/run-pages/indexed.new $r/indexed.txt
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: '{{.CTAN_FOOT}}', UPSTREAM: 'https://ctan.org/tex-archive/'}}
+      - test ! -s {{.F}}/run-pages-stamp/index-make.txt
+      - {task: pages, vars: {RUN: '{{.F}}/run-pages-stamp', STAGING: '{{.F}}/run-pages-stamp/staging', INDEX: '{{.CTAN_INDEX}}', PAGE_FOOT: x, UPSTREAM: 'https://ctan.org/tex-archive/'}}
+      - cmp {{.F}}/run-pages-stamp/index-make.txt {{.F}}/run-pages-stamp/index-dirs.txt
       # CTYPE gives the full value of the header, with its charset.
       - "test \"$(printf 'HTTP/2 200\\r\\nContent-Type: text/plain; charset=utf-8\\r\\n' | {{.CTYPE}})\" = 'text/plain; charset=utf-8'"
       # run-smoke: an hour with one change only, timestamp, and one new page only, the

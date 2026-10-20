@@ -258,8 +258,8 @@ task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rs
 task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/applied.new.xz s3://example/.state/applied.txt.xz
 task: [rebuild] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [rebuild] rm -f /work/examples/rsync/.run/rebuild-now
-task: [reconcile] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/applied.txt | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > /work/examples/rsync/.run/index-keys.txt
+task: [reconcile] cat /work/examples/rsync/.run/applied.txt /work/examples/rsync/.run/upstream-dirs.txt | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
+  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > /work/examples/rsync/.run/index-keys.txt
 task: [reconcile] cut -f1 /work/examples/rsync/.run/bucket.txt | grep -vE '^\.state/' | awk -v i="/example.katoptra.org.directory.index.html" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i' | LC_ALL=C comm -23 - /work/examples/rsync/.run/index-keys.txt | LC_ALL=C comm -23 - /work/examples/rsync/.run/paths.txt > /work/examples/rsync/.run/orphans.txt
 task: [remove] rm -f /work/examples/rsync/.run/del-*; split -l 1000 -a 4 /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/del-
 task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
@@ -282,10 +282,14 @@ case $rc in
 esac
 
 task: [pages] mkdir -p /work/examples/rsync/staging /work/examples/rsync/.run/slash && find /work/examples/rsync/staging /work/examples/rsync/.run/slash -mindepth 1 -delete && : > /work/examples/rsync/.run/index-real.txt
-task: [pages] LC_ALL=C comm -3 /work/examples/rsync/.run/indexed.txt /work/examples/rsync/.run/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }' | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
+task: [pages] { cat /work/examples/rsync/.run/applied.txt; awk '{ print $0 "\t\t" }' /work/examples/rsync/.run/upstream-dirs.txt; } | LC_ALL=C sort > /work/examples/rsync/.run/page-state.txt
+task: [pages] printf '%s\n' 2 example.katoptra.org.directory.index.html 'index.html index.htm' 'A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.' '' '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
+task: [pages] awk 'NR == 1 && /^#pages / { next } { print }' /work/examples/rsync/.run/indexed.txt > /work/examples/rsync/.run/index-old.txt
+task: [pages] { LC_ALL=C comm -3 /work/examples/rsync/.run/index-old.txt /work/examples/rsync/.run/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'; head -1 /work/examples/rsync/.run/indexed.txt | cmp -s - /work/examples/rsync/.run/index-stamp.txt || cat /work/examples/rsync/.run/page-state.txt; } | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
   { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
 task: [pages] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/applied.txt | LC_ALL=C sort > /work/examples/rsync/.run/index-dirs.txt
+  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort > /work/examples/rsync/.run/index-dirs.txt
+task: [pages] cat /work/examples/rsync/.run/index-stamp.txt /work/examples/rsync/.run/page-state.txt > /work/examples/rsync/.run/indexed.new
 task: [pages] LC_ALL=C comm -23 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt | awk -v i="example.katoptra.org.directory.index.html" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > /work/examples/rsync/.run/index-gone.txt
 task: [pages] LC_ALL=C comm -12 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt > /work/examples/rsync/.run/index-make.txt
 task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v s="/work/examples/rsync/staging/" '{ print s $0 }' /work/examples/rsync/.run/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
@@ -295,8 +299,8 @@ task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v r="/w
 task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
   { n = split($1, c, "/"); d = ""
     for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
-    if (d in want) print d, "f", c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/applied.txt \
-| LC_ALL=C sort | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F='A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.' \
+    if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/page-state.txt \
+| LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F='A mirror of rsync.example.org/pub/. <a href="https://example.org/issues">Report a problem</a>.' \
   -v N='index.html index.htm' -v X="/work/examples/rsync/.run/index-real.txt" 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
@@ -313,6 +317,7 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
     if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
       f = R k "/" b; printf("%s", p) > f; close(f) } }
   !live || $1 != cur { if (live) shut(); open($1) }
+  $2 == "e" { next }
   $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
   ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
   { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }
@@ -324,7 +329,8 @@ task: [remove] rm -f /work/examples/rsync/.run/del-*; split -l 1000 -a 4 /work/e
 task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
      printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
 > "$f.json" && aws s3api delete-objects --bucket example --delete "file://$f.json" | tee -a /work/examples/rsync/.run/publish.txt | { test "$(grep -c Errors)" = 0; }; done
-task: [index] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 s3://example/.state/applied.txt.xz s3://example/.state/indexed.txt.xz
+task: [push] xz -T0 -c /work/examples/rsync/.run/indexed.new > /work/examples/rsync/.run/indexed.new.xz
+task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/indexed.new.xz s3://example/.state/indexed.txt.xz
 task: [smoke] {  awk -F'\t' '!seen[$2]++' /work/examples/rsync/.run/labeled.txt 2>/dev/null; } | while IFS="$(printf '\t')" read -r k t; do u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2); want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' /work/examples/rsync/.run/upstream.txt); h=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -r 0-0 -D - -o /dev/null "https://example.katoptra.org/$u"); got=$(printf '%s\n' "$h" | awk 'tolower($1) == "content-range:" { split($3, a, "/"); r = a[2] }
