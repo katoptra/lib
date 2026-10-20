@@ -112,6 +112,13 @@ Read that section before you write.
 - Give `aws s3api copy-object --copy-source` the raw key. The CLI encodes it. A key that is
   encoded first is encoded two times (`a%20b` goes out as `a%2520b`), and the copy then
   reads a different key (verified with `aws --debug`, aws-cli 2.36.24).
+- Increase `PAGE_FORMAT` in `engines/rsync.yml` at each change to the HTML or the style of
+  a directory page. If you do not, each mirror keeps the pages of the directories that do
+  not change, and they show the old format. The stamp in `.state/indexed.txt.xz` includes
+  `PAGE_FORMAT`. A new value makes each mirror write all of its pages again, one time.
+- The page awk of `pages` writes each page directly to its two files. Do not make the page
+  with a string that gets a row at a time. That method copies the full string for each
+  row. The `archive/` directory of TeX Live has approximately 34k rows.
 - In a check, give `RUN` to a verb as a call var, not as `RUN=...` on the command line. The
   toolbox sets `RUN` as a global var, and go-task uses the command-line value in some runs
   only (verified, 3.53.1). For this cause, `offline` starts `copy-cli`, which gives `RUN`
@@ -134,7 +141,8 @@ The rsync check runs on `examples/rsync/fixtures/`:
 - The list diff on `run-root` and `run-empty`
 - The exit codes of `retry`
 - `pages` on `run-pages`. Its `want/` is the page set of ctan, and the result must agree
-  with it byte for byte.
+  with it byte for byte. Then the stamp on `run-pages-stamp`, and the time of a page with
+  10,000 files on `run-pages-big`.
 - The page read-back of `smoke` on `run-smoke`
 - `prepare` and `verify` on `tree/`, a signed subtree. A test key, which the example pins,
   signs its tlpdb.

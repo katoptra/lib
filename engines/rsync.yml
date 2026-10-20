@@ -33,8 +33,13 @@
 #       between each two names. When a directory has such a file, its page key is a copy
 #       of the first one, and its key without the slash keeps the listing. An empty value
 #       gives a listing for each directory.
-#     - PAGE_FOOT: the HTML at the end of each page, with %s for the encoded path of the
-#       directory. An empty value gives none.
+#     - UPSTREAM: the URL of the upstream tree. The footer of each page gives it as text,
+#       with the path of the directory. An empty value gives a footer with no upstream.
+#     - CONTACT: the e-mail address for problem reports, in the footer of each page. An
+#       empty value gives the first label of HOST, "@" and the other labels of HOST.
+#     - PAGE_FOOT: HTML for the footer of each page, in place of the footer from UPSTREAM
+#       and CONTACT, with %s for the encoded path of the directory. An empty value gives
+#       the footer from UPSTREAM and CONTACT.
 #     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
 #       CANARY is set, smoke reads the file through the domain as a Perl client.
 #     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
@@ -227,9 +232,9 @@ tasks:
             size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
             print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
         | LC_ALL=C sort > {{.RUN}}/upstream.txt
-      # The directories of upstream, each with a slash at the end. The root (".") is not
-      # in the file. pages makes a page for each directory, also for a directory with no
-      # file.
+      # This command writes the directories of upstream, each with a slash at the end. The
+      # root (".") is not in the file. pages makes a page for each directory, also for a
+      # directory with no file.
       - >-
         awk '
           /^d/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
@@ -810,8 +815,8 @@ tasks:
         { cat {{.RUN}}/applied.txt; awk '{ print $0 "\t\t" }' {{.RUN}}/upstream-dirs.txt; }
         | LC_ALL=C sort > {{.RUN}}/page-state.txt
       # The stamp identifies the bytes of the pages: PAGE_FORMAT and each var that changes
-      # a page. INDEXED starts with the stamp of the pages that it records. The state of
-      # an earlier release has no stamp.
+      # a page. INDEXED starts with the stamp of the pages that it records. If INDEXED has
+      # no stamp line, the stamps do not agree.
       - >-
         printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} {{shellQuote (.INDEX_FILES | default "")}}
         {{shellQuote (.PAGE_FOOT | default "")}} {{shellQuote (.UPSTREAM | default "")}} {{shellQuote (.CONTACT | default "")}}

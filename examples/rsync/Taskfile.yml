@@ -153,8 +153,8 @@ tasks:
       #
       # upstream-dirs.txt also has e1/ and e1/e2/, two directories with no file. Each gets a
       # page, and the root page and the page of e1/ show them. indexed.txt has no stamp
-      # (the format before PAGE_FORMAT 2). Thus, pages makes all the pages again, and it
-      # still gives the two keys of gone/ for removal. indexed.new starts with the stamp.
+      # line. Thus, pages makes all the pages again, and it still gives the two keys of
+      # gone/ for removal. indexed.new starts with the stamp.
       - {task: pages, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}', UPSTREAM: '{{.CTAN_UP}}'}}
       - test "$(tr '\n' '|' < {{.F}}/run-pages/index-make.txt)" = "|a/|a/b/|a/doc/|a/sp ace/|a/sp ace/ü%&/|e1/|e1/e2/|"
       - test -f "{{.F}}/run-pages/staging/e1/e2/{{.CTAN_INDEX}}" && grep -q 'href="e2/"' "{{.F}}/run-pages/staging/e1/{{.CTAN_INDEX}}"
