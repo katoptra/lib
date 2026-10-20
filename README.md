@@ -335,7 +335,7 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | Verb | Function |
 |---|---|
 | `pipeline`, `plan-pipeline` | The verbs in the diagram, in sequence, and the read-only half: `clock`, `list`, `state`, `diff`, `split` |
-| `list` | `rsync -rL --list-only` of `SOURCE`, with `FILTER`. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
+| `list` | `rsync -rL --list-only` of `SOURCE`, with `FILTER`. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, and each directory to `.run/upstream-dirs.txt` as `path/`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
 | `state` | Downloads `.state/applied.txt.xz` from the bucket. If the file is missing, `state` tells `rebuild` to make it |
 | `rebuild` | Makes a listing of the bucket. The new state has each key that the bucket contains with the number of bytes that upstream gives. It uploads the new state as one PutObject |
 | `diff` | Writes `changed.txt`, `deleted.txt` and `paths.txt`. `changed.txt` has the lines that upstream has and the state does not have. It also has the file of each changed signed sha512. `deleted.txt` has the paths that the state has and upstream does not have |
@@ -348,9 +348,9 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `label` | Writes `.run/labels.txt`: the Content-Type of each file in staging, from its name and its first KiB. A text type gets a charset if the file is UTF-8. Refer to [Content types](#content-types) |
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
-| `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the state. Then it runs `reconciled` |
+| `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the page state. Then it runs `reconciled` |
 | `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that upstream removed. Then it writes the stamp and the page state to `.state/indexed.txt.xz`. A mirror with a different landing page overrides `index` |
-| `pages` | Writes a page for each directory that the run changed, from the state, into staging. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
+| `pages` | Writes a page for each directory that the run changed, from the page state, into staging. If the stamp of INDEXED does not agree, it writes a page for each directory. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
 | `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
 | `smoke-mirror` | A hook, empty here. A mirror with more items to read back writes it |
@@ -695,10 +695,11 @@ These procedures repair other problems:
   reconcile finds that the key is missing, and the subsequent run fetches it again. Do not
   edit the state manually to get the key back before the next reconcile. An error in the
   state can make the engine delete or fetch the incorrect files.
-- **Write all directory pages again.** A change to a var of the stamp does this at the next
-  run. To do it with no change, use `aws s3 rm s3://<BUCKET>/.state/indexed.txt.xz`.
-  The next run writes the page of each directory at its two keys. This procedure is safe:
-  it does not change the files in the bucket.
+- **Write all directory pages again.** Change a var of the stamp, or increase
+  `PAGE_FORMAT` in a release. The next run writes the page of each directory at its two
+  keys, and it removes the keys of each directory that upstream removed. Do not delete
+  `.state/indexed.txt.xz` to do this. Without that file, the run cannot find a directory
+  that upstream removed, and the page of that directory stays in the bucket.
 - **A directory URL gives 404.** The page is at its key, with or without the zone rule. Use
   `curl -sI https://<HOST>/<dir>/<INDEX>`. If this command gives 200 and the directory URL
   does not, the Transform Rule is missing, or its scope is not correct.

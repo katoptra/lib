@@ -283,14 +283,14 @@ esac
 
 task: [pages] mkdir -p /work/examples/rsync/staging /work/examples/rsync/.run/slash && find /work/examples/rsync/staging /work/examples/rsync/.run/slash -mindepth 1 -delete && : > /work/examples/rsync/.run/index-real.txt
 task: [pages] { cat /work/examples/rsync/.run/applied.txt; awk '{ print $0 "\t\t" }' /work/examples/rsync/.run/upstream-dirs.txt; } | LC_ALL=C sort > /work/examples/rsync/.run/page-state.txt
-task: [pages] printf '%s\n' 2 example.katoptra.org.directory.index.html 'index.html index.htm' '' https://example.org/pub/ '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
+task: [pages] printf '%s\n' 2 example.katoptra.org.directory.index.html 'index.html index.htm' '' '' '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
 task: [pages] awk 'NR == 1 && /^#pages / { next } { print }' /work/examples/rsync/.run/indexed.txt > /work/examples/rsync/.run/index-old.txt
 task: [pages] { LC_ALL=C comm -3 /work/examples/rsync/.run/index-old.txt /work/examples/rsync/.run/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'; head -1 /work/examples/rsync/.run/indexed.txt | cmp -s - /work/examples/rsync/.run/index-stamp.txt || cat /work/examples/rsync/.run/page-state.txt; } | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
   { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
 task: [pages] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
   { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort > /work/examples/rsync/.run/index-dirs.txt
 task: [pages] cat /work/examples/rsync/.run/index-stamp.txt /work/examples/rsync/.run/page-state.txt > /work/examples/rsync/.run/indexed.new
-task: [pages] LC_ALL=C comm -23 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt | awk -v i="example.katoptra.org.directory.index.html" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > /work/examples/rsync/.run/index-gone.txt
+task: [pages] LC_ALL=C comm -23 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt | awk -v i="example.katoptra.org.directory.index.html" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' | awk -F'\t' 'NR == FNR { f[$1] = 1; next } !($0 in f)' /work/examples/rsync/.run/page-state.txt - > /work/examples/rsync/.run/index-gone.txt
 task: [pages] LC_ALL=C comm -12 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt > /work/examples/rsync/.run/index-make.txt
 task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v s="/work/examples/rsync/staging/" '{ print s $0 }' /work/examples/rsync/.run/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
 task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v r="/work/examples/rsync/.run/slash/" '$0 != "" { n = split($0, c, "/"); d = ""
@@ -301,7 +301,7 @@ task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -F'\t' -
     for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
     if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/page-state.txt \
 | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F='' \
-  -v N='index.html index.htm' -v X="/work/examples/rsync/.run/index-real.txt" -v U=https://example.org/pub/ \
+  -v N='index.html index.htm' -v X="/work/examples/rsync/.run/index-real.txt" -v U='' \
   -v C='' -v H="example.katoptra.org" 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }

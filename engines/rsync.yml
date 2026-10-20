@@ -743,7 +743,7 @@ tasks:
 
   # ---- after the bytes moved ----
   index:
-    desc: 'Hook. With INDEX set: redraw the directory pages this run changed and publish them; INDEXED, the state the pages last showed, moves forward only after they landed. A mirror with a landing page of its own replaces it'
+    desc: 'Hook. With INDEX set: redraw the directory pages this run changed and publish them; INDEXED, the stamp and the page state the pages last showed, moves forward only after they landed. A mirror with a landing page of its own replaces it'
     status: ['test -z "{{.INDEX}}"']
     set: [pipefail]
     vars:
@@ -792,7 +792,7 @@ tasks:
         echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
 
   pages:
-    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied, RUN/index-real.txt for the directories with an index file
+    desc: RUN/indexed.txt against the page state (RUN/applied.txt and RUN/upstream-dirs.txt) -> a page under both of its keys for every directory a changed line touches, or for every directory when the stamp differs; RUN/index-gone.txt for the keys of directories that upstream removed; RUN/index-real.txt for the directories with an index file; RUN/indexed.new for INDEXED
     set: [pipefail]
     vars:
       # The verb writes each page to two keys:
@@ -840,10 +840,13 @@ tasks:
       - '{{.ANCESTORS}} {{.RUN}}/page-state.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
       - cat {{.RUN}}/index-stamp.txt {{.RUN}}/page-state.txt > {{.RUN}}/indexed.new
       # When a directory is removed, the verb removes its two keys. The root has no
-      # slashless key.
+      # slashless key. When upstream changes a directory into a file with the same name,
+      # the slashless key is that file. Thus, the last awk keeps each key that is a file
+      # of the page state.
       - >-
         LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
-        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > {{.RUN}}/index-gone.txt
+        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }'
+        | awk -F'\t' 'NR == FNR { f[$1] = 1; next } !($0 in f)' {{.RUN}}/page-state.txt - > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
@@ -871,11 +874,12 @@ tasks:
       # one time and closes it. The verb percent-encodes each name in href and HTML-escapes
       # it in text.
       #
-      # The verb makes the full page, and then writes it to its two keys. Thus, the two
-      # keys have the same bytes. With the base href, one document is correct for /dir/
-      # and for /dir. Without it, a relative href in the second resolves against the
-      # parent. PAGE_FOOT is at the end of each page, with %s for the encoded path of the
-      # directory. When PAGE_FOOT is empty, the table is the last part of the page.
+      # The verb keeps the rows of a directory in arrays. At shut, it writes the page to its
+      # two keys with the same calls. Thus, the two keys have the same bytes. With the base
+      # href, one document is correct for /dir/ and for /dir. Without it, a relative href in
+      # the second resolves against the parent. The footer is PAGE_FOOT, with %s for the
+      # encoded path of the directory. When PAGE_FOOT is empty, the verb makes the footer
+      # from UPSTREAM and CONTACT. CONTACT gets its default from HOST.
       #
       # rank gives the position of each name in INDEX_FILES. real is the index file of the
       # open directory with the lowest rank. Without a real, shut writes the page key.
