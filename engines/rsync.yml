@@ -89,7 +89,7 @@ vars:
   # The format of the directory pages. Increase it at each change to the HTML or the style
   # of a page. The stamp in INDEXED includes it. Thus, when a mirror gets a release with a
   # new format, its next run makes all of its pages again.
-  PAGE_FORMAT: '2'
+  PAGE_FORMAT: '3'
   # Batches for each run. The remaining batches chain the next run.
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'
   # Seconds. A retry waits RETRY_S * 2^i, plus jitter.
@@ -199,7 +199,7 @@ tasks:
       # uses one of the other files writes that file. A workspace that a previous run used
       # must start each run without these files. If not, smoke and the report count lines
       # from a previous run.
-      - rm -f {{.RUN}}/publish.txt {{.RUN}}/labeled.txt {{.RUN}}/orphans.txt {{.RUN}}/unlanded.txt {{.RUN}}/fresh.txt
+      - rm -f {{.RUN}}/publish.txt {{.RUN}}/labeled.txt {{.RUN}}/orphans.txt {{.RUN}}/unlanded.txt {{.RUN}}/fresh.txt {{.RUN}}/index-same.txt
       - mkdir -p {{.RUN}} {{.STAGING}}
       # -L gives each symlink as the file that it points to. If the target of a symlink is
       # not upstream, rsync reports the symlink and ignores it. rsync then exits 23, but
@@ -754,6 +754,7 @@ tasks:
       # that, the file is there.
       - {task: pull, vars: {KEY: '{{.INDEXED}}', OUT: '{{.RUN}}/indexed.txt', MISSING: ': > {{.RUN}}/indexed.txt'}}
       - {task: pages}
+      - {task: index-same}
       # At this point, staging holds only pages, because checkpoint removed the files. The
       # pages stay for smoke. The split verb of the next run removes them. The verb does
       # not append them to publish.txt, because smoke compares the size of that sample
@@ -790,6 +791,45 @@ tasks:
         while IFS="$(printf '\t')" read -r s k; do
         aws s3api copy-object --bucket {{.BUCKET}} --copy-source "{{.BUCKET}}/$s" --key "$k" --metadata-directive COPY > /dev/null;
         echo "copy: $s to $k"; done < {{.RUN}}/index-real.txt
+
+  # Not internal: the offline check of lib starts it with its name.
+  index-same:
+    desc: When the stamp did not agree, read the ETag of each key in the bucket. Remove from staging and from RUN/index-make.txt each directory whose staged keys have the same MD5; RUN/index-same.txt gets these directories
+    # When the stamp agrees, pages makes only the pages of the changed directories, and the
+    # listing costs more Class A operations than it saves. The listing gives 1,000 keys
+    # for each request. For a bucket with 571k keys, this is 572 operations, against two
+    # for each page. With no INDEXED, the bucket has no page.
+    status: ['test ! -s {{.RUN}}/index-make.txt || test ! -s {{.RUN}}/indexed.txt || head -1 {{.RUN}}/indexed.txt | cmp -s - {{.RUN}}/index-stamp.txt']
+    set: [pipefail]
+    vars:
+      SLASH: '{{.RUN}}/slash'
+    cmds:
+      # R2 gives the MD5 of the bytes as the ETag of a key that one PUT wrote. The ETag of a
+      # multipart upload is different, and such a page goes up again. If the listing
+      # fails, each page goes up.
+      - >-
+        aws s3api list-objects-v2 --bucket {{.BUCKET}} --query 'Contents[].[Key,ETag]' --output text > {{.RUN}}/bucket-etags.txt ||
+        { echo "index-same: the listing failed; index sends each page"; : > {{.RUN}}/bucket-etags.txt; }
+      # Each line of page-md5.txt is "md5 TAB p|s TAB key": p for a page key in staging, s
+      # for a slashless key in a SLASH tree.
+      - >-
+        { (cd {{.STAGING}} && find . -type f -exec md5sum {} +) | sed 's#  \./#\tp\t#';
+        for d in {{.SLASH}}/*/; do test -d "$d" || continue; (cd "$d" && find . -type f -exec md5sum {} +) | sed 's#  \./#\ts\t#'; done; }
+        > {{.RUN}}/page-md5.txt
+      # A directory is the same if each of its keys is the same. The awk writes the same
+      # directories to index-same.txt, the other directories to index-make.new, and the
+      # files of the same directories to its output. The awk finds each input with
+      # FILENAME, because an empty file has no first line.
+      - >-
+        awk -F'\t' -v E="{{.RUN}}/bucket-etags.txt" -v H="{{.RUN}}/page-md5.txt" -v I="{{.INDEX}}" -v S="{{.STAGING}}/" -v R="{{.SLASH}}/"
+        -v Y="{{.RUN}}/index-same.txt" -v M="{{.RUN}}/index-make.new" '
+          FILENAME == E { gsub(/"/, "", $2); e[$1] = $2; next }
+          FILENAME == H { if ($2 == "s") d = $3 "/"; else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I)); else next
+            seen[d] = 1; if (e[$3] != $1) diff[d] = 1; next }
+          !($0 in seen) || ($0 in diff) { print > M; next }
+          { print > Y; print S $0 I; if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }' {{.RUN}}/bucket-etags.txt {{.RUN}}/page-md5.txt {{.RUN}}/index-make.txt \
+        | tr '\n' '\0' | xargs -0r rm -f
+      - touch {{.RUN}}/index-same.txt {{.RUN}}/index-make.new && mv {{.RUN}}/index-make.new {{.RUN}}/index-make.txt
 
   pages:
     desc: RUN/indexed.txt against the page state (RUN/applied.txt and RUN/upstream-dirs.txt) -> a page under both of its keys for every directory a changed line touches, or for every directory when the stamp differs; RUN/index-gone.txt for the keys of directories that upstream removed; RUN/index-real.txt for the directories with an index file; RUN/indexed.new for INDEXED
@@ -883,6 +923,10 @@ tasks:
       #
       # rank gives the position of each name in INDEX_FILES. real is the index file of the
       # open directory with the lowest rank. Without a real, shut writes the page key.
+      #
+      # G gives the suffixes of the signature files and the checksum files. The match
+      # ignores uppercase and lowercase. A file whose name is a different file of the
+      # directory plus one or more of these suffixes goes on the row of that file.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
@@ -893,6 +937,7 @@ tasks:
           -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" -v U={{shellQuote (.UPSTREAM | default "")}} \
           -v C={{shellQuote (.CONTACT | default "")}} -v H="{{.HOST}}" '{{.URLENC}}
           BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
+            G = "\\.(sig|sign|asc|gpg|dsig|proof|md5|md5sum|sha|sha1|sha224|sha256|sha256sum|sha512|sum|checksums)$"
             if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1)
             css = ":root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}"
             css = css "@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}"
@@ -924,7 +969,7 @@ tasks:
           function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
           function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
             for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
-              while (match(r, /\.(sig|asc|sign|sha256|sha512)$/)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
+              while (match(tolower(r), G)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
               if (x != "") { fold[i] = 1
                 links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
             c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
@@ -938,7 +983,7 @@ tasks:
             if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
             for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
             for (i = 1; i <= nfl; i++) if (!(i in fold))
-              w("<tr" (fname[i] ~ /\.(sig|asc|sign|sha256|sha512)$/ ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
+              w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
             w("</tbody></table>" foot() "</body></html>\n")
             if (real == "") close(fa); if (cur != "") close(fb) }
           !live || $1 != cur { if (live) shut(); open($1) }
@@ -1108,7 +1153,7 @@ tasks:
       # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
       - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # With INDEX set, the pages that index made and the keys that it removed.
-      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn, $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) of them with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn and sent, $(test -f {{.RUN}}/index-same.txt && wc -l < {{.RUN}}/index-same.txt || echo 0) redrawn and not sent (the bucket had the same bytes), $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       # Rows that show only when they have data.
       - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
       - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"

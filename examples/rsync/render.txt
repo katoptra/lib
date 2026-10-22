@@ -20,7 +20,7 @@ esac
 test "$last" = 0 && ago="none on record" || ago="$(( (now - last) / 3600 )) h ago"
 echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f /work/examples/rsync/.run/reconcile && echo reconciling || echo not this run)"
 
-task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt
+task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt /work/examples/rsync/.run/index-same.txt
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
   rc=0; ( TZ=UTC rsync --timeout=300 --contimeout=60 --no-h -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
@@ -283,7 +283,7 @@ esac
 
 task: [pages] mkdir -p /work/examples/rsync/staging /work/examples/rsync/.run/slash && find /work/examples/rsync/staging /work/examples/rsync/.run/slash -mindepth 1 -delete && : > /work/examples/rsync/.run/index-real.txt
 task: [pages] { cat /work/examples/rsync/.run/applied.txt; awk '{ print $0 "\t\t" }' /work/examples/rsync/.run/upstream-dirs.txt; } | LC_ALL=C sort > /work/examples/rsync/.run/page-state.txt
-task: [pages] printf '%s\n' 2 example.katoptra.org.directory.index.html 'index.html index.htm' '' '' '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
+task: [pages] printf '%s\n' 3 example.katoptra.org.directory.index.html 'index.html index.htm' '' '' '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
 task: [pages] awk 'NR == 1 && /^#pages / { next } { print }' /work/examples/rsync/.run/indexed.txt > /work/examples/rsync/.run/index-old.txt
 task: [pages] { LC_ALL=C comm -3 /work/examples/rsync/.run/index-old.txt /work/examples/rsync/.run/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'; head -1 /work/examples/rsync/.run/indexed.txt | cmp -s - /work/examples/rsync/.run/index-stamp.txt || cat /work/examples/rsync/.run/page-state.txt; } | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
   { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
@@ -306,6 +306,7 @@ task: [pages] test ! -s /work/examples/rsync/.run/index-make.txt || awk -F'\t' -
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
   BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
+    G = "\\.(sig|sign|asc|gpg|dsig|proof|md5|md5sum|sha|sha1|sha224|sha256|sha256sum|sha512|sum|checksums)$"
     if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1)
     css = ":root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}"
     css = css "@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}"
@@ -337,7 +338,7 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
   function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
   function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
     for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
-      while (match(r, /\.(sig|asc|sign|sha256|sha512)$/)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
+      while (match(tolower(r), G)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
       if (x != "") { fold[i] = 1
         links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
     c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
@@ -351,7 +352,7 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
     if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
     for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
     for (i = 1; i <= nfl; i++) if (!(i in fold))
-      w("<tr" (fname[i] ~ /\.(sig|asc|sign|sha256|sha512)$/ ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
+      w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
     w("</tbody></table>" foot() "</body></html>\n")
     if (real == "") close(fa); if (cur != "") close(fb) }
   !live || $1 != cur { if (live) shut(); open($1) }
@@ -360,6 +361,16 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
   ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
   { fname[++nfl] = $3; fsize[nfl] = $4; ftime[nfl] = $5; has[$3] = 1; tot += $4 }
   END { if (live) shut() }'
+task: [index-same] aws s3api list-objects-v2 --bucket example --query 'Contents[].[Key,ETag]' --output text > /work/examples/rsync/.run/bucket-etags.txt || { echo "index-same: the listing failed; index sends each page"; : > /work/examples/rsync/.run/bucket-etags.txt; }
+task: [index-same] { (cd /work/examples/rsync/staging && find . -type f -exec md5sum {} +) | sed 's#  \./#\tp\t#'; for d in /work/examples/rsync/.run/slash/*/; do test -d "$d" || continue; (cd "$d" && find . -type f -exec md5sum {} +) | sed 's#  \./#\ts\t#'; done; } > /work/examples/rsync/.run/page-md5.txt
+task: [index-same] awk -F'\t' -v E="/work/examples/rsync/.run/bucket-etags.txt" -v H="/work/examples/rsync/.run/page-md5.txt" -v I="example.katoptra.org.directory.index.html" -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v Y="/work/examples/rsync/.run/index-same.txt" -v M="/work/examples/rsync/.run/index-make.new" '
+  FILENAME == E { gsub(/"/, "", $2); e[$1] = $2; next }
+  FILENAME == H { if ($2 == "s") d = $3 "/"; else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I)); else next
+    seen[d] = 1; if (e[$3] != $1) diff[d] = 1; next }
+  !($0 in seen) || ($0 in diff) { print > M; next }
+  { print > Y; print S $0 I; if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }' /work/examples/rsync/.run/bucket-etags.txt /work/examples/rsync/.run/page-md5.txt /work/examples/rsync/.run/index-make.txt \
+| tr '\n' '\0' | xargs -0r rm -f
+task: [index-same] touch /work/examples/rsync/.run/index-same.txt /work/examples/rsync/.run/index-make.new && mv /work/examples/rsync/.run/index-make.new /work/examples/rsync/.run/index-make.txt
 task: [index] test ! -s /work/examples/rsync/.run/index-make.txt || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' /work/examples/rsync/staging/ s3://example/
 task: [index] for d in /work/examples/rsync/.run/slash/*/; do test -d "$d" || continue; aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' "$d" s3://example/; done
 task: [index-copy] while IFS="$(printf '\t')" read -r s k; do aws s3api copy-object --bucket example --copy-source "example/$s" --key "$k" --metadata-directive COPY > /dev/null; echo "copy: $s to $k"; done < /work/examples/rsync/.run/index-real.txt

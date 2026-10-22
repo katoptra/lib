@@ -161,8 +161,11 @@ tasks:
       # The page of a/b/:
       #   - The names are in version sequence: x-2.2, x-2.10, x-2.12, x-2.12.3.
       #   - A signature or checksum file goes on the row of its file, as a link with its
-      #     suffix, directly after the name. y.exe.sha512.asc goes on the row of y.exe.
-      #   - A suffix file with no file before the suffix keeps its row, with class s.
+      #     suffix, directly after the name. y.exe.md5 and y.exe.sha512.asc go on the row
+      #     of y.exe. The match ignores uppercase and lowercase: x-2.10.tar.gz.SHA1 goes on
+      #     the row of x-2.10.tar.gz, and the link keeps the name.
+      #   - A suffix file with no file before the suffix keeps its row, with class s
+      #     (orphan.tar.gz.sig, w.tar.gz.sha256sum).
       #   - The size is IEC, with the exact bytes in the title. The time is UTC, to the
       #     minute.
       #   - The footer gives UPSTREAM and the directory as text, and CONTACT, which comes
@@ -173,9 +176,11 @@ tasks:
         s={{.F}}/run-pages/staging; p="$s/a/b/{{.CTAN_INDEX}}"
         test "$(grep -o 'href="x-[^"]*\.tar\.gz"' "$p" | tr '\n' ' ')" = 'href="x-2.2.tar.gz" href="x-2.10.tar.gz" href="x-2.12.tar.gz" href="x-2.12.3.tar.gz" '
         grep -qF 'x-2.12.3.tar.gz</a><a class="k" href="x-2.12.3.tar.gz.asc" aria-label="x-2.12.3.tar.gz.asc">.asc</a><a class="k" href="x-2.12.3.tar.gz.sig" aria-label="x-2.12.3.tar.gz.sig">.sig</a></td>' "$p"
-        grep -qF 'y.exe</a><a class="k" href="y.exe.sha512" aria-label="y.exe.sha512">.sha512</a><a class="k" href="y.exe.sha512.asc" aria-label="y.exe.sha512.asc">.sha512.asc</a></td>' "$p"
-        test "$(grep -c '">y.exe.sha512' "$p")" -eq 0
+        grep -qF 'y.exe</a><a class="k" href="y.exe.md5" aria-label="y.exe.md5">.md5</a><a class="k" href="y.exe.sha512" aria-label="y.exe.sha512">.sha512</a><a class="k" href="y.exe.sha512.asc" aria-label="y.exe.sha512.asc">.sha512.asc</a></td>' "$p"
+        grep -qF 'x-2.10.tar.gz</a><a class="k" href="x-2.10.tar.gz.SHA1" aria-label="x-2.10.tar.gz.SHA1">.SHA1</a></td>' "$p"
+        test "$(grep -c '">y.exe.sha512\|">y.exe.md5\|">x-2.10.tar.gz.SHA1' "$p")" -eq 0
         grep -qF '<tr class="s"><td><a href="orphan.tar.gz.sig">orphan.tar.gz.sig</a></td>' "$p"
+        grep -qF '<tr class="s"><td><a href="w.tar.gz.sha256sum">w.tar.gz.sha256sum</a></td>' "$p"
         grep -qF '<tr class="s"><td><a href=".sig">.sig</a></td>' "$p"
         grep -qF '<td title="1,189,208 bytes">1.1 MiB</td>' "$p"
         grep -qF '<th>Modified (UTC)</th>' "$p" && grep -qF '<td>2026-08-28 06:00</td>' "$p"
@@ -197,6 +202,37 @@ tasks:
         r={{.F}}/run-pages; date -u +%s > $r/staging/timestamp &&
         printf 'timestamp\t%s\t-\n' "$(wc -c < $r/staging/timestamp | tr -d ' ')" > $r/upstream.txt
       - {task: smoke, vars: {RUN: '{{.F}}/run-pages', STAGING: '{{.F}}/run-pages/staging', URL: 'file://{{.F}}/run-pages/staging', INDEX: '{{.CTAN_INDEX}}'}}
+      # run-same: index-same over a copy of the pages of run-pages. A stub aws, first on
+      # PATH, records its arguments and gives the listing in run-same/listing. When the
+      # stamp agrees, index-same does not start aws. When it does not agree, the listing
+      # has the MD5 of each key, but a different ETag for a/b, the slashless key of a/b/,
+      # and no key of e1/e2/. Thus, a/b/ and e1/e2/ stay in index-make.txt, in staging and
+      # in the SLASH trees. The other directories go to index-same.txt, and their keys
+      # leave staging and the SLASH trees. a/doc/ has only its slashless key. timestamp is
+      # not a page, and it stays.
+      - |
+        r={{.F}}/run-same; mkdir -p $r/bin
+        cp -R {{.F}}/run-pages/staging {{.F}}/run-pages/slash {{.F}}/run-pages/index-make.txt {{.F}}/run-pages/index-stamp.txt $r/
+        cp $r/index-stamp.txt $r/indexed.txt
+        cat > $r/bin/aws <<'EOF'
+        #!/bin/sh
+        printf '%s\n' "$@" >> "$(dirname "$0")/../args"
+        cat "$(dirname "$0")/../listing"
+        EOF
+        chmod +x $r/bin/aws
+        { (cd $r/staging && find . -type f -exec md5sum {} +); for d in $r/slash/*/; do (cd "$d" && find . -type f -exec md5sum {} +); done; } \
+          | awk -v I={{.CTAN_INDEX}} '{ k = substr($0, 37) } k == "e1/e2/" I || k == "e1/e2" { next } { printf "%s\t\"%s\"\n", k, (k == "a/b" ? "0" : $1) }' > $r/listing
+      - PATH="{{.F}}/run-same/bin:$PATH" task same-cli
+      - test ! -f {{.F}}/run-same/args && test ! -f {{.F}}/run-same/index-same.txt
+      - echo '#pages 0' > {{.F}}/run-same/indexed.txt
+      - PATH="{{.F}}/run-same/bin:$PATH" task same-cli
+      - printf '%s\n' s3api list-objects-v2 --bucket {{.BUCKET}} --query 'Contents[].[Key,ETag]' --output text | diff - {{.F}}/run-same/args
+      - |
+        r={{.F}}/run-same
+        test "$(tr '\n' '|' < $r/index-make.txt)" = "a/b/|e1/e2/|"
+        test "$(tr '\n' '|' < $r/index-same.txt)" = "|a/|a/doc/|a/sp ace/|a/sp ace/ü%&/|e1/|"
+        test "$(cd $r/staging && find . -type f | LC_ALL=C sort | tr '\n' '|')" = "./a/b/{{.CTAN_INDEX}}|./e1/e2/{{.CTAN_INDEX}}|./timestamp|"
+        test "$(cd $r/slash && find . -type f | LC_ALL=C sort | tr '\n' '|')" = "./2/a/b|./2/e1/e2|"
       # run-pages-stamp: INDEXED is the indexed.new of run-pages. With the same vars, the
       # stamp agrees, and pages makes no page. With a different PAGE_FOOT, the stamp does
       # not agree, and pages makes the page of each directory again.
@@ -352,6 +388,12 @@ tasks:
     desc: index-copy over run-copy-cli, after offline made it; offline runs this task with a stub aws first on PATH
     cmds:
       - {task: index-copy, vars: {RUN: '{{.RUN}}/fixtures/run-copy-cli'}}
+  same-cli:
+    desc: index-same over run-same, after offline made it from the pages of run-pages (the INDEX of ctan); offline runs this task with a stub aws first on PATH
+    vars:
+      R: '{{.RUN}}/fixtures/run-same'
+    cmds:
+      - {task: index-same, vars: {RUN: '{{.R}}', STAGING: '{{.R}}/staging', INDEX: ctan.katoptra.org.directory.index.html}}
   smoke-refuses-copy:
     desc: smoke over run-copy with the page key one byte longer than its source, after offline made run-copy; offline expects it to fail
     vars:
