@@ -64,6 +64,12 @@ tasks:
       - {task: list, vars: {SOURCE: '{{.ROOT_DIR}}/fixtures/run-root/staging/', RSYNC: 'rsync --no-h'}}
       - test "$(cut -f1 {{.RUN}}/upstream.txt | tr '\n' ' ')" = "a/b/f.txt timestamp "
       - test "$(tr '\n' ' ' < {{.RUN}}/upstream-dirs.txt)" = "a/ a/b/ "
+      # list on a name that is not ASCII. The image has the POSIX locale. Without -8, rsync
+      # writes each byte above 127 as \#ooo, and fetch then asks for a name that upstream
+      # does not have. The name must come through as its bytes.
+      - rm -rf /tmp/list-utf8 && mkdir /tmp/list-utf8 && printf x > "/tmp/list-utf8/$(printf 'caf\303\251.txt')" && printf x > /tmp/list-utf8/z.txt
+      - {task: list, vars: {SOURCE: /tmp/list-utf8/, RSYNC: 'rsync --no-h'}}
+      - test "$(cut -f1 {{.RUN}}/upstream.txt | tr '\n' ' ')" = "$(printf 'caf\303\251.txt z.txt ')"
       # The verbs write their files adjacent to the files that they read. Thus, they
       # operate on a copy.
       - rm -rf {{.F}} && cp -R {{.ROOT_DIR}}/fixtures {{.F}}
@@ -76,12 +82,21 @@ tasks:
       - cmp {{.F}}/run-root/applied.new {{.F}}/run-root/upstream.txt
       - {task: split, vars: {RUN: '{{.F}}/run-root', STAGING: '{{.F}}/staging'}}
       - test "$(ls {{.F}}/run-root/batch-*.txt | wc -l)" -eq 1 && cmp {{.F}}/run-root/batch-0001.txt {{.F}}/run-root/changed.txt
+      # split refuses a BATCH_GB that is not a whole number. Shell arithmetic reads 08 as 0
+      # and 0x1 as 1.
+      - task split-refuses B=08 2>&1 | grep -q 'BATCH_GB is a whole number, not 08'
+      - task split-refuses B=0x1 2>&1 | grep -q 'BATCH_GB is a whole number, not 0x1'
       # run-empty: the batch identifies a file that upstream removed before fetch. Thus,
       # staging did not get it. merge removes it, and the state does not identify a key
       # that the bucket does not have.
       - {task: diff, vars: {RUN: '{{.F}}/run-empty'}}
       - {task: merge, vars: {RUN: '{{.F}}/run-empty', STAGING: '{{.F}}/run-empty/staging', B: '{{.F}}/run-empty/changed.txt'}}
       - cmp {{.F}}/run-empty/applied.new {{.F}}/run-empty/applied.txt
+      # merge with an empty batch file: the state does not change. delete and reconcile
+      # give no empty batch, but a new caller can.
+      - mkdir -p {{.F}}/run-merge-empty/staging && cp {{.F}}/run-root/upstream.txt {{.F}}/run-merge-empty/applied.txt && touch {{.F}}/run-merge-empty/b.txt
+      - {task: merge, vars: {RUN: '{{.F}}/run-merge-empty', STAGING: '{{.F}}/run-merge-empty/staging', B: '{{.F}}/run-merge-empty/b.txt'}}
+      - cmp {{.F}}/run-merge-empty/applied.new {{.F}}/run-merge-empty/applied.txt
       # run-resign: upstream wrote the sha512 and the signature of x.exe again, and it did
       # not change x.exe. Each night, the build of TeX Live does this to its prebuilt
       # installer. diff puts x.exe back into the delta. Thus, verify has the file that the
@@ -117,9 +132,9 @@ tasks:
       - test -f {{.F}}/due/reconcile
       - {task: due-rule, vars: {RUN: '{{.F}}/due', RECONCILE: 'true'}}
       - test -f {{.F}}/due/reconcile
-      - task due-refuses R=yes 2>&1 | grep -q 'RECONCILE is true, false or auto'
-      - task due-refuses H=abc 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
-      - task due-refuses H=08 2>&1 | grep -q 'RECONCILE_HOURS is a whole number'
+      - 'task due-refuses R=yes 2>&1 | grep -q ''^due: RECONCILE is true, false or auto'''
+      - 'task due-refuses H=abc 2>&1 | grep -q ''^due: RECONCILE_HOURS is a whole number'''
+      - 'task due-refuses H=08 2>&1 | grep -q ''^due: RECONCILE_HOURS is a whole number'''
       # run-tl: the signed subtree.
       #   1. prepare downloads the control files from the tree. It examines the signed
       #      sha512 with the pinned key.
@@ -233,6 +248,19 @@ tasks:
         test "$(tr '\n' '|' < $r/index-same.txt)" = "|a/|a/doc/|a/sp ace/|a/sp ace/ü%&/|e1/|"
         test "$(cd $r/staging && find . -type f | LC_ALL=C sort | tr '\n' '|')" = "./a/b/{{.CTAN_INDEX}}|./e1/e2/{{.CTAN_INDEX}}|./timestamp|"
         test "$(cd $r/slash && find . -type f | LC_ALL=C sort | tr '\n' '|')" = "./2/a/b|./2/e1/e2|"
+      # PAGE_FOOT is a printf format with one %s, for the directory, and %% for a %. pages
+      # refuses each other directive. If not, 100% sure prints the directory in the text.
+      - rm -rf {{.F}}/run-foot && mkdir -p {{.F}}/run-foot && cp {{.ROOT_DIR}}/fixtures/run-pages/applied.txt {{.ROOT_DIR}}/fixtures/run-pages/upstream-dirs.txt {{.ROOT_DIR}}/fixtures/run-pages/indexed.txt {{.F}}/run-foot/
+      - task pages-foot 'P=100% sure' 2>&1 | grep -qF 'PAGE_FOOT can have one %s, and %%, not 100% sure'
+      - task pages-foot 'P=Mirror of %s, 100%% sure'
+      - grep -qF '<footer>Mirror of a/b/, 100% sure</footer>' '{{.F}}/run-foot/staging/a/b/{{.CTAN_INDEX}}'
+      # run-gone: pages with an empty page state. The keys of each directory of INDEXED go:
+      # the root page, and the two keys of a/.
+      - |
+        r={{.F}}/run-gone; rm -rf $r && mkdir -p $r && : > $r/applied.txt && : > $r/upstream-dirs.txt
+        printf 'a/\t\t\na/f\t1\t2026/08/28 06:00:00\n' > $r/indexed.txt
+      - {task: pages, vars: {RUN: '{{.F}}/run-gone', STAGING: '{{.F}}/run-gone/staging', INDEX: '{{.CTAN_INDEX}}', HOST: '{{.CTAN_HOST}}'}}
+      - test "$(tr '\n' '|' < {{.F}}/run-gone/index-gone.txt)" = "{{.CTAN_INDEX}}|a/{{.CTAN_INDEX}}|a|"
       # run-pages-stamp: INDEXED is the indexed.new of run-pages. With the same vars, the
       # stamp agrees, and pages makes no page. With a different PAGE_FOOT, the stamp does
       # not agree, and pages makes the page of each directory again.
@@ -368,11 +396,25 @@ tasks:
       - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: new.txt}}
       - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: timestamp}}
       - '! task fresh-refuses 2>/dev/null'
+      # fresh refuses a FRESH_HOURS with a 0 first. Shell arithmetic reads 010 as 8 hours.
+      - task fresh-hours H=010 2>&1 | grep -q 'FRESH_HOURS is a whole number, not 010'
       - 'echo "offline: every check passed"'
   fresh-refuses:
     desc: fresh over offline's run-fresh with a clock two days old; offline expects it to fail
     cmds:
       - {task: fresh, vars: {RUN: '{{.RUN}}/fixtures/run-fresh', URL: 'file://{{.RUN}}/fixtures/run-fresh/srv', FRESH_KEY: old.txt}}
+  split-refuses:
+    desc: split over offline's run-root with BATCH_GB B; offline expects it to refuse
+    cmds:
+      - {task: split, vars: {RUN: '{{.RUN}}/fixtures/run-root', STAGING: '{{.RUN}}/fixtures/staging', BATCH_GB: '{{.B}}'}}
+  fresh-hours:
+    desc: fresh over offline's run-fresh with FRESH_HOURS H and a clock one hour old; offline expects it to refuse H
+    cmds:
+      - {task: fresh, vars: {RUN: '{{.RUN}}/fixtures/run-fresh', URL: 'file://{{.RUN}}/fixtures/run-fresh/srv', FRESH_KEY: new.txt, FRESH_H: '{{.H}}'}}
+  pages-foot:
+    desc: pages over run-foot, a copy of the run-pages input, with PAGE_FOOT P; offline expects it to refuse a P with a directive that is not %s or %%
+    cmds:
+      - {task: pages, vars: {RUN: '{{.RUN}}/fixtures/run-foot', STAGING: '{{.RUN}}/fixtures/run-foot/staging', INDEX: ctan.katoptra.org.directory.index.html, HOST: ctan.katoptra.org, PAGE_FOOT: '{{.P}}'}}
   due-refuses:
     desc: due-rule over offline's due fixture with RECONCILE R and RECONCILE_HOURS H; offline expects it to refuse
     cmds:

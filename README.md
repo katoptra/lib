@@ -335,7 +335,7 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | Verb | Function |
 |---|---|
 | `pipeline`, `plan-pipeline` | The verbs in the diagram, in sequence, and the read-only half: `clock`, `list`, `state`, `diff`, `split` |
-| `list` | `rsync -rL --list-only` of `SOURCE`, with `FILTER`. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, and each directory to `.run/upstream-dirs.txt` as `path/`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
+| `list` | `rsync -8 -rL --list-only` of `SOURCE`, with `FILTER`. With `-8`, a name that is not ASCII stays as its bytes. `normalise` writes it to `.run/upstream.txt` as `path TAB size TAB mtime`, and each directory to `.run/upstream-dirs.txt` as `path/`, in the sequence of byte values. A listing that does not have more lines than `LIST_FLOOR` stops the run. If rsync cannot read a directory, it exits 23, and `retry` accepts exit 23: the run continues. The listing then does not have the files of that directory, and `delete` removes them from the bucket, the same as files that upstream deleted. When rsync can read the directory again, a run fetches its files again |
 | `state` | Downloads `.state/applied.txt.xz` from the bucket. If the file is missing, `state` tells `rebuild` to make it |
 | `rebuild` | Makes a listing of the bucket. The new state has each key that the bucket contains with the number of bytes that upstream gives. It uploads the new state as one PutObject |
 | `diff` | Writes `changed.txt`, `deleted.txt` and `paths.txt`. `changed.txt` has the lines that upstream has and the state does not have. It also has the file of each changed signed sha512. `deleted.txt` has the paths that the state has and upstream does not have |
@@ -609,7 +609,7 @@ inline default, and a mirror sets only the vars that are different:
 | Var | Default | Function |
 |---|---|---|
 | `CEILING_GB` | 0, no ceiling | `split` rejects a tree that is larger than this number of decimal GB |
-| `BATCH_GB` | 4 | Decimal GB in each batch. A larger file is a batch with no other file |
+| `BATCH_GB` | 4 | Decimal GB in each batch: digits, with no 0 first. A larger file is a batch with no other file. `split` stops the run on a different value |
 | `MAX_BATCHES` | 4 | The batches in each run. The next run, which the chain starts, does the other batches |
 | `LIST_FLOOR` | 0, no guard | A listing that does not have more lines than this number is truncated, and the engine does not use it to delete keys. Set it to approximately 90% of the usual number of lines |
 | `RECONCILE`, `RECONCILE_HOURS` | `auto`, 24 | The vars of the toolbox: refer to [When a reconcile runs](#when-a-reconcile-runs) |
@@ -621,10 +621,10 @@ inline default, and a mirror sets only the vars that are different:
 | `INDEX_FILES` | Empty | The names of the index files, in sequence. A space is between two names. The page key of a directory with such a file is a copy of the first one. Refer to [Directory pages](#directory-pages) |
 | `UPSTREAM` | Empty | The URL of the upstream tree, with a slash at the end. The footer of each directory page gives it as text, with the path of the directory. If it is empty, the footer does not give upstream |
 | `CONTACT` | From `HOST` | The e-mail address for problem reports, in the footer of each directory page. The default is the first label of `HOST`, `@`, and the other labels: `gnu.katoptra.org` gives `gnu@katoptra.org` |
-| `PAGE_FOOT` | Empty | HTML for the footer of each directory page, in place of the footer from `UPSTREAM` and `CONTACT`. `%s` is the encoded path of the directory, and `%%` gives one `%` |
+| `PAGE_FOOT` | Empty | HTML for the footer of each directory page, in place of the footer from `UPSTREAM` and `CONTACT`. `%s` is the encoded path of the directory, and `%%` gives one `%`. It can have one `%s`. `pages` stops the run on a different directive |
 | `CANARY` | Empty | A file that `smoke` reads from the domain as a Perl client, and compares with the bucket, byte for byte. All files can be the canary. A file with `http://` links (not `https://`) or `mailto:` addresses also finds the HTML rewriters of the zone. The path must have no character that a URL encodes |
 | `FRESH_KEY` | Empty | A file in which upstream records its clock, as Unix time or as `YYYY-MM-DD-HH-MM` (the format of CTAN). If it has a value, `fresh` stops the run when the clock is more than `FRESH_HOURS` before the time of the run |
-| `FRESH_HOURS` | 24 | Hours. This value is less than 28 hours: at 28 hours, the mirror checks of GNU and CTAN show a problem |
+| `FRESH_HOURS` | 24 | Hours: digits, with no 0 first. This value is less than 28 hours: at 28 hours, the mirror checks of GNU and CTAN show a problem. `fresh` stops the run on a different value |
 
 A var in the root `vars:` of a mirror has the same value for all runs. In an included verb,
 the run uses a root value, not a `KEY=value` on the command line. A var that the mirror
