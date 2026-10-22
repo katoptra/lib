@@ -1387,6 +1387,11 @@ these rules:
 - A new hook is an empty task, with a `desc` that gives the mirror that fills it. The verb that runs the hook gives it the vars that it uses.
 - A new var that a mirror can set is an inline `{{.X | default N}}` in the command that
   reads it. Write the default one time. Add a row to the table in [The vars](#the-vars).
+- Put each awk or Python program of more than two lines in the `programs` part of `vars:`.
+  Write a comment above it that gives its function and its inputs. The command that runs
+  the program gives it each input with awk `-v`, `ENVIRON` or an argument. A program has
+  no template of a var that a caller can give, because task renders a global var without
+  the call vars.
 - A change to a verb is a change to `examples/<variant>/render.txt`. The diff of that file
   in the pull request is the review.
 
