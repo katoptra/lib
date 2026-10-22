@@ -119,6 +119,10 @@ Read that section before you write.
 - The page awk of `pages` writes each page directly to its two files. Do not make the page
   with a string that gets a row at a time. That method copies the full string for each
   row. The `archive/` directory of TeX Live has approximately 34k rows.
+- In a check that reads the output of a task with `grep`, find text that only the output
+  has. go-task shows each command before it runs it, and that line also has the text of
+  each `echo` in the command. For example, `offline` finds `not 08` in the output of
+  `split-refuses`, and the command has `not $b`.
 - In a check, give `RUN` to a verb as a call var, not as `RUN=...` on the command line. The
   toolbox sets `RUN` as a global var, and go-task uses the command-line value in some runs
   only (verified, 3.53.1). For this cause, `offline` starts `copy-cli`, which gives `RUN`

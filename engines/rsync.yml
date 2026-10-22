@@ -15,7 +15,7 @@
 #   - SOURCE, BUCKET and HOST. These vars are necessary.
 #   - These vars have an inline default:
 #     - CEILING_GB. A value of 0 (or no value) gives no ceiling.
-#     - BATCH_GB: 4.
+#     - BATCH_GB: 4. Digits, with no 0 first.
 #     - MAX_BATCHES: 4.
 #     - LIST_FLOOR. A value of 0 (or no value) gives no guard for a truncated listing. A
 #       listing must have more than LIST_FLOOR lines. If not, the run stops.
@@ -38,14 +38,14 @@
 #     - CONTACT: the e-mail address for problem reports, in the footer of each page. An
 #       empty value gives the first label of HOST, "@" and the other labels of HOST.
 #     - PAGE_FOOT: HTML for the footer of each page, in place of the footer from UPSTREAM
-#       and CONTACT, with %s for the encoded path of the directory. An empty value gives
-#       the footer from UPSTREAM and CONTACT.
+#       and CONTACT, with one %s for the encoded path of the directory and %% for a %.
+#       An empty value gives the footer from UPSTREAM and CONTACT.
 #     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
 #       CANARY is set, smoke reads the file through the domain as a Perl client.
 #     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
 #       check of that clock.
-#     - FRESH_HOURS: 24. When the clock in FRESH_KEY is more than FRESH_HOURS before the
-#       time of the check, smoke stops the run with a failure.
+#     - FRESH_HOURS: 24. Digits, with no 0 first. When the clock in FRESH_KEY is more
+#       than FRESH_HOURS before the time of the check, smoke stops the run with a failure.
 #
 # The label verb here selects the Content-Type of each object. The AWS CLI does not select
 # it, for two causes:
@@ -208,8 +208,12 @@ tasks:
       #
       # rsync shows each time in the time zone of the container. TZ=UTC makes each time
       # UTC, and the directory pages show the times as UTC.
+      #
+      # The image has the POSIX locale. In that locale, rsync writes each byte above 127 of
+      # a name as \#ooo. fetch then asks for a name that upstream does not have, and the
+      # file never lands. -8 writes the bytes of the name.
       - task: retry
-        vars: {CMD: 'TZ=UTC {{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
+        vars: {CMD: 'TZ=UTC {{.RSYNC}}{{if .FILTER}} {{.FILTER}}{{end}} -8 -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
       - {task: normalise}
 
   normalise:
@@ -318,6 +322,11 @@ tasks:
   split:
     desc: Refuse a tree over CEILING_GB (when set) or a file the disk cannot hold; split changed.txt into RUN/batch-NNNN.txt
     cmds:
+      # BATCH_GB goes into shell arithmetic below. There, 08 is 0 and 0x1 is 1. Thus, this
+      # command stops the run on each value that is not a whole number.
+      - >-
+        b={{shellQuote (print (.BATCH_GB | default 4))}};
+        case "$b" in ''|0?*|*[!0-9]*) echo "split: BATCH_GB is a whole number, not $b" >&2; exit 1 ;; esac
       # CEILING_GB unset or 0 gives no ceiling. The command always prints the size.
       - >-
         {{if .CEILING_GB}}awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
@@ -345,12 +354,9 @@ tasks:
       # does not start a new batch. Also, diff puts x in the delta when x.sha512 is in the
       # delta. Thus, verify always finds the file that its signature identifies.
       #
-      # ponytail: BATCH_GB goes into the command with no quotes, because it is in $(( )),
-      # where a quoted operand is a syntax error. The workflow keeps it safe, because it
-      # rejects a vars input that validate-vars.sh does not accept. Ceiling: a different
-      # caller that gives text that is not safe to `task sync --`. Upgrade path: make sure
-      # here that the value is a number. Then do `task render-update` in lib and in each
-      # rsync mirror. The render.txt of each records this line.
+      # BATCH_GB goes into the command with no quotes, because it is in $(( )), where a
+      # quoted operand is a syntax error. The first command of split stops the run before
+      # this line on each value that is not a whole number.
       - >-
         awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
           index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
@@ -660,9 +666,12 @@ tasks:
       # identify a key that the bucket does not have. With deleted.txt as B (paths only,
       # and an empty staging), merge only removes lines. It operates in 0.1 s on 511k
       # lines.
+      #
+      # The awk finds B with FILENAME, not with NR == FNR. An empty B has no first line.
+      # Then NR == FNR is also true for each line of the state, and the state is empty.
       - (cd {{.STAGING}} && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > {{.RUN}}/landed.txt
       - >-
-        awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
+        awk -F'\t' 'FILENAME == ARGV[1] { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
         | cat - <(LC_ALL=C join -t "$(printf '\t')" {{.RUN}}/landed.txt {{.B}}) | LC_ALL=C sort > {{.RUN}}/applied.new
 
   checkpoint:
@@ -847,6 +856,13 @@ tasks:
       # task var, because a global var cannot follow a RUN that the caller gives.
       SLASH: '{{.RUN}}/slash'
     cmds:
+      # PAGE_FOOT is a printf format. It can have one %s, for the encoded directory, and %%
+      # for a %. A different directive takes the directory or prints nothing. Thus, this
+      # command stops the run on such a PAGE_FOOT. awk reads the value from the
+      # environment, because awk -v changes each backslash escape.
+      - >-
+        PAGE_FOOT={{shellQuote (.PAGE_FOOT | default "")}} awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
+          if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
       # The page state is the state and a line "dir/ TAB TAB" for each directory of
       # upstream. Thus, a directory with no file also gets a page, and the page of its
@@ -882,11 +898,13 @@ tasks:
       # When a directory is removed, the verb removes its two keys. The root has no
       # slashless key. When upstream changes a directory into a file with the same name,
       # the slashless key is that file. Thus, the last awk keeps each key that is a file
-      # of the page state.
+      # of the page state. It finds the page state with FILENAME, not with NR == FNR. An
+      # empty page state has no first line. Then NR == FNR is also true for each key, and
+      # no key goes.
       - >-
         LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
         | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }'
-        | awk -F'\t' 'NR == FNR { f[$1] = 1; next } !($0 in f)' {{.RUN}}/page-state.txt - > {{.RUN}}/index-gone.txt
+        | awk -F'\t' 'FILENAME == ARGV[1] { f[$1] = 1; next } !($0 in f)' {{.RUN}}/page-state.txt - > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
@@ -1124,7 +1142,7 @@ tasks:
         {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
         if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
         then echo "freshness skipped ($k is not in the state)"; else
-        case "{{.FRESH_H}}" in ''|*[!0-9]*) echo "FRESH_HOURS is a whole number" >&2; exit 1 ;; esac;
+        h={{shellQuote .FRESH_H}}; case "$h" in ''|0?*|*[!0-9]*) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
         t=$({{.CURL}} "{{.URL}}/$u" | {{.STAMP}});
         case "$t" in *-*) t=$(date -u -d "$t" +%s) ;; esac; test -n "$t";
