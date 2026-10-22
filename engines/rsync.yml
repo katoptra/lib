@@ -33,6 +33,13 @@
 #     MAX_BATCHES.
 #   - A var with a different name that reads the tunable continues to see the command
 #     line. Thus, each default is in one location only, in the vars and verbs that follow.
+#   - A text value of the mirror (FRESH_KEY, CANARY, PAGE_FOOT, UPSTREAM, CONTACT and
+#     INDEX_FILES) goes to a command in `env:`, not in a template. The shell reads "$X",
+#     awk gets the value with -v or ENVIRON, and Python gets it as an argument. Thus, no
+#     value goes into the text of a program, and a quotation mark in a value cannot
+#     change a command. A var of the environment with the same name wins over `env:`.
+#     The container gets only the names in PASS_ENV of the toolbox. Thus, do not pass
+#     one of these names into the container.
 # The other vars get their values from the vars of the mirror, or they are helper vars of
 # the engine.
 version: '3'
@@ -275,6 +282,39 @@ vars:
             if t.startswith("text/") and utf8(p):
                 t += "; charset=utf-8"
             out.write(os.fsencode(os.path.relpath(p, root)) + b"\t" + t.encode() + b"\n")
+  # label-trees: with "up", move each file of the labels out of staging into one tree for
+  # each type, and write the type of each tree to N.type. With "staging", move the files
+  # back. The arguments are staging, the up directory, the labels, the direction and the
+  # name of the FRESH_KEY file, which stays in staging.
+  TREES_PY: |-
+    import os, shutil, sys
+
+    staging, up, labels, to, fresh = (os.fsencode(a) for a in sys.argv[1:6])
+
+    def move(a, b):
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+        os.rename(a, b)
+
+    if to == b"up":
+        shutil.rmtree(up, ignore_errors=True)
+        trees = {}
+        with open(labels, "rb") as f:
+            for line in f:
+                path, t = line.rstrip(b"\n").split(b"\t")
+                if path != fresh:
+                    n = trees.setdefault(t, str(len(trees) + 1).encode())
+                    move(os.path.join(staging, path), os.path.join(up, n, path))
+        for t, n in trees.items():
+            with open(os.path.join(up, n + b".type"), "wb") as f:
+                f.write(t)
+    else:
+        for n in os.listdir(up) if os.path.isdir(up) else ():
+            tree = os.path.join(up, n)
+            for d, _, files in os.walk(tree) if os.path.isdir(tree) else ():
+                for f in files:
+                    p = os.path.join(d, f)
+                    move(p, os.path.join(staging, os.path.relpath(p, tree)))
+        shutil.rmtree(up, ignore_errors=True)
   # remove: the JSON body of one DeleteObjects call, for the keys of a file, one key on each
   # line. The program escapes each backslash and each double quotation mark of a key.
   DELETE_JSON: |-
@@ -712,6 +752,7 @@ tasks:
     internal: true
     requires: {vars: [B]}
     set: [pipefail]   # tee must not change the exit of an upload that has a failure
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       - {task: label}
       - cat {{.RUN}}/labels.txt >> {{.RUN}}/labeled.txt
@@ -729,15 +770,13 @@ tasks:
       # The FRESH_KEY file goes to the bucket last, in one more command. It gives the date
       # of the tree, and monitors (for example, mirmon) read it.
       #
-      # ponytail: this command and label-trees put FRESH_KEY, with no quotes, into an awk
-      # string and a Python string. Ceiling: a key with a quote, a backslash or a
-      # non-ASCII character makes these strings incorrect. Upgrade path: give it to awk
-      # with -v, and to Python as an argument. Then do `task render-update` in lib and in
-      # each rsync mirror.
+      # ponytail: awk -v changes each backslash escape in FRESH_KEY, here, in smoke-sample
+      # and in fresh. Ceiling: a key with a backslash. Upgrade path: read the key with
+      # ENVIRON in these three commands.
       - >-
-        {{if .FRESH_KEY}}test ! -f {{.STAGING}}/{{shellQuote .FRESH_KEY}} ||
-        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == "{{.FRESH_KEY}}" { print $2 }' {{.RUN}}/labels.txt)"
-        {{.STAGING}}/{{shellQuote .FRESH_KEY}} {{.S3}}/{{shellQuote .FRESH_KEY}} | tee -a {{.RUN}}/publish.txt{{end}}
+        {{if .FRESH_KEY}}test ! -f {{.STAGING}}/"$FRESH_KEY" ||
+        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' -v k="$FRESH_KEY" '$1 == k { print $2 }' {{.RUN}}/labels.txt)"
+        {{.STAGING}}/"$FRESH_KEY" {{.S3}}/"$FRESH_KEY" | tee -a {{.RUN}}/publish.txt{{end}}
 
   label:
     desc: RUN/labels.txt, "path TAB type" for every file under DIR (STAGING), byte-sorted; the type is decided from the name and the first KiB, never left to the CLI
@@ -759,6 +798,7 @@ tasks:
     desc: 'TO=up: rename every file of RUN/labels.txt but the FRESH_KEY file out of STAGING into RUN/up/N/, one tree per type, its type in RUN/up/N.type. TO=staging: rename them back'
     internal: true
     requires: {vars: [TO]}
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       # Renames on one filesystem. Thus, the verb makes no copy of a byte, and staging has
       # all its files again for merge. If a run stops between TO=up and TO=staging, files
@@ -768,35 +808,8 @@ tasks:
       # The FRESH_KEY file stays in staging, and publish sends it last. With no FRESH_KEY,
       # the empty name agrees with no file. Thus, all files move.
       - |
-        python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} <<'PY'
-        import os, shutil, sys
-
-        staging, up, labels, to = (os.fsencode(a) for a in sys.argv[1:5])
-
-        def move(a, b):
-            os.makedirs(os.path.dirname(b), exist_ok=True)
-            os.rename(a, b)
-
-        if to == b"up":
-            shutil.rmtree(up, ignore_errors=True)
-            trees = {}
-            with open(labels, "rb") as f:
-                for line in f:
-                    path, t = line.rstrip(b"\n").split(b"\t")
-                    if path != b"{{.FRESH_KEY}}":
-                        n = trees.setdefault(t, str(len(trees) + 1).encode())
-                        move(os.path.join(staging, path), os.path.join(up, n, path))
-            for t, n in trees.items():
-                with open(os.path.join(up, n + b".type"), "wb") as f:
-                    f.write(t)
-        else:
-            for n in os.listdir(up) if os.path.isdir(up) else ():
-                tree = os.path.join(up, n)
-                for d, _, files in os.walk(tree) if os.path.isdir(tree) else ():
-                    for f in files:
-                        p = os.path.join(d, f)
-                        move(p, os.path.join(staging, os.path.relpath(p, tree)))
-            shutil.rmtree(up, ignore_errors=True)
+        python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} "$FRESH_KEY" <<'PY'
+        {{.TREES_PY}}
         PY
 
   merge:
@@ -977,6 +990,11 @@ tasks:
   pages:
     desc: RUN/indexed.txt against the page state (RUN/applied.txt and RUN/upstream-dirs.txt) -> a page under both of its keys for every directory a changed line touches, or for every directory when the stamp differs; RUN/index-gone.txt for the keys of directories that upstream removed; RUN/index-real.txt for the directories with an index file; RUN/indexed.new for INDEXED
     set: [pipefail]
+    env: &pagetext
+      INDEX_FILES: '{{.INDEX_FILES}}'
+      UPSTREAM: '{{.UPSTREAM}}'
+      CONTACT: '{{.CONTACT}}'
+      PAGE_FOOT: '{{.PAGE_FOOT}}'
     vars:
       # The verb writes each page to two keys:
       #   - <dir>/INDEX. For a directory URL, the rewrite of the zone sends this key.
@@ -995,7 +1013,7 @@ tasks:
       # command stops the run on such a PAGE_FOOT. awk reads the value from the
       # environment, because awk -v changes each backslash escape.
       - >-
-        PAGE_FOOT={{shellQuote (.PAGE_FOOT | default "")}} awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
+        awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
           if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
       # A task does not see the call vars of the task that starts it. Thus, pages gives its
@@ -1018,6 +1036,7 @@ tasks:
     desc: The page state, the stamp and RUN/indexed.new; then RUN/index-gone.txt, the keys to remove, and RUN/index-make.txt, the directories to draw
     internal: true
     set: [pipefail]
+    env: *pagetext
     cmds:
       # The page state is the state and a line "dir/ TAB TAB" for each directory of
       # upstream. Thus, a directory with no file also gets a page, and the page of its
@@ -1029,8 +1048,7 @@ tasks:
       # a page. INDEXED starts with the stamp of the pages that it records. If INDEXED has
       # no stamp line, the stamps do not agree.
       - >-
-        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} {{shellQuote (.INDEX_FILES | default "")}}
-        {{shellQuote (.PAGE_FOOT | default "")}} {{shellQuote (.UPSTREAM | default "")}} {{shellQuote (.CONTACT | default "")}}
+        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} "$INDEX_FILES" "$PAGE_FOOT" "$UPSTREAM" "$CONTACT"
         {{shellQuote .HOST}} | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > {{.RUN}}/index-stamp.txt
       - awk 'NR == 1 && /^#pages / { next } { print }' {{.RUN}}/indexed.txt > {{.RUN}}/index-old.txt
       # A page changes when a file in its directory, or a directory below it, is added,
@@ -1066,6 +1084,7 @@ tasks:
     desc: A page in STAGING for each directory of RUN/index-make.txt, and its slashless copy in SLASH
     internal: true
     set: [pipefail]
+    env: *pagetext
     cmds:
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
@@ -1092,8 +1111,7 @@ tasks:
         test ! -s {{.RUN}}/index-make.txt ||
         awk -F'\t' -v OFS='\t' '{{.PAGE_ENTRIES}}' {{.RUN}}/index-make.txt {{.RUN}}/page-state.txt
         | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}"
-        -v F={{shellQuote (.PAGE_FOOT | default "")}} -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt"
-        -v U={{shellQuote (.UPSTREAM | default "")}} -v C={{shellQuote (.CONTACT | default "")}} -v H="{{.HOST}}"
+        -v F="$PAGE_FOOT" -v N="$INDEX_FILES" -v X="{{.RUN}}/index-real.txt" -v U="$UPSTREAM" -v C="$CONTACT" -v H="{{.HOST}}"
         -v css={{shellQuote .PAGE_CSS}} '{{.PAGE_HTML}}'
 
   smoke:
@@ -1123,18 +1141,7 @@ tasks:
   smoke-sample:
     desc: The first key of each type that label gave this run, and the FRESH_KEY file when the state has it, read back through the domain; size against the listing, and with http the type against the label
     internal: true
-    vars:
-      # The sample reads the FRESH_KEY file only when the state shows that the file is in
-      # the bucket. The file is in the decision batch, which is the last batch. A first
-      # fill that stops at MAX_BATCHES does not do that batch. The bucket then gives 404 for
-      # the key, because no run put it in the bucket. The run that puts the file in the
-      # bucket, and each run after it, include the file in the sample.
-      #
-      # An {{if}} on a string goes to {{else}} only when the string is empty. Thus, the
-      # path is the flag and also the key.
-      TS:
-        sh: |-
-          {{if .FRESH_KEY}}awk -F'\t' -v k={{shellQuote .FRESH_KEY}} '$1 == k { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true{{end}}
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       # The sample is the first key of each type that label gave in this run. The command
       # reads each key again with its encoded URL, and finds its line in the listing with
@@ -1142,10 +1149,16 @@ tasks:
       # Content-Type with the label. This finds the CLI, R2 or the zone when one of them
       # sends a type that is different from the selected type.
       #
-      # The FRESH_KEY file is in the sample for its size only. A key in the sample can
-      # contain a space. All other keys can also contain a space.
+      # The FRESH_KEY file is in the sample for its size only. The sample reads it only when
+      # the state shows that the file is in the bucket. The file is in the decision batch,
+      # which is the last batch. A first fill that stops at MAX_BATCHES does not do that
+      # batch. The bucket then gives 404 for the key, because no run put it in the bucket.
+      # The run that puts the file in the bucket, and each run after it, include the file
+      # in the sample.
+      #
+      # A key in the sample can contain a space. All other keys can also contain a space.
       - >-
-        { {{if .TS}}printf '%s\t\n' {{shellQuote .TS}};{{end}}
+        { {{if .FRESH_KEY}}awk -F'\t' -v k="$FRESH_KEY" '$1 == k { print $1 "\t" }' {{.RUN}}/applied.txt 2>/dev/null || true;{{end}}
         awk -F'\t' '!seen[$2]++' {{.RUN}}/labeled.txt 2>/dev/null; }
         | while IFS="$(printf '\t')" read -r k t; do
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
@@ -1203,6 +1216,7 @@ tasks:
   smoke-canary:
     desc: With CANARY set, in the state and over http, the canary read as a Perl client against the bucket's copy
     internal: true
+    env: {CANARY: '{{.CANARY}}'}
     cmds:
       # The HTML rewriters of Cloudflare are between R2 and the client. Thus, the check
       # compares the object with the file that the domain sends. A size check is not
@@ -1218,7 +1232,7 @@ tasks:
       # The command does not do this check with file://, which has no bucket to read. It
       # also does not do it before the state holds the path.
       - >-
-        {{if .CANARY}}h={{shellQuote .CANARY}}; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
+        {{if .CANARY}}h="$CANARY"; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) n= ;; esac;
         if test -z "$n"; then echo "canary skipped ($h is not in the state, or the URL is not http)"; else
         aws s3 cp {{.AWS_FLAGS}} "{{.S3}}/$h" {{.RUN}}/canary.html &&
@@ -1263,12 +1277,13 @@ tasks:
 
   fresh:
     desc: With FRESH_KEY set and in the state, read it through the domain and fail the run when the upstream clock in it is FRESH_HOURS (24) old; a source that stalls otherwise leaves every run green
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       # The run moved each byte that it got. Thus, only the clock that upstream wrote can
       # show that the bytes are expired. Upstream can stop. A secondary mirror can stop its
       # sync while its rsync daemon continues to operate.
       - >-
-        {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
+        {{if .FRESH_KEY}}k="$FRESH_KEY";
         if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
         then echo "freshness skipped ($k is not in the state)"; else
         h={{shellQuote .FRESH_H}}; case "$h" in {{.NOT_WHOLE}}) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
@@ -1286,6 +1301,7 @@ tasks:
   report-engine:
     desc: The engine's rows of the run summary, appended after the toolbox's
     silent: true
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       - |
         n() { test -f "$1" && wc -l < "$1" || echo 0; }
@@ -1304,7 +1320,7 @@ tasks:
         test -z "{{.INDEX}}" || echo "| Directory pages | $(n {{.RUN}}/index-make.txt) redrawn and sent, $(n {{.RUN}}/index-same.txt) redrawn and not sent (the bucket had the same bytes), $(n {{.RUN}}/index-real.txt) with a copy of an index file as the page key, $(n {{.RUN}}/index-gone.txt) keys removed |" >> "$out"
         # Rows that show only when they have data.
         test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "$out"
-        test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "$out"
+        test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in $FRESH_KEY, limit {{.FRESH_H}} h |" >> "$out"
 
   retry:
     desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; 23 (a path it could not read, a dangling symlink under -L) and 24 (file vanished mid-transfer) are successes

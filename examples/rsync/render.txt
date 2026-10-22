@@ -163,10 +163,10 @@ PY
 
 task: [label] LC_ALL=C sort /work/examples/rsync/.run/labels.raw > /work/examples/rsync/.run/labels.txt && rm /work/examples/rsync/.run/labels.raw
 task: [publish] cat /work/examples/rsync/.run/labels.txt >> /work/examples/rsync/.run/labeled.txt
-task: [label-trees] python3 -I - /work/examples/rsync/staging /work/examples/rsync/.run/up /work/examples/rsync/.run/labels.txt up <<'PY'
+task: [label-trees] python3 -I - /work/examples/rsync/staging /work/examples/rsync/.run/up /work/examples/rsync/.run/labels.txt up "$FRESH_KEY" <<'PY'
 import os, shutil, sys
 
-staging, up, labels, to = (os.fsencode(a) for a in sys.argv[1:5])
+staging, up, labels, to, fresh = (os.fsencode(a) for a in sys.argv[1:6])
 
 def move(a, b):
     os.makedirs(os.path.dirname(b), exist_ok=True)
@@ -178,7 +178,7 @@ if to == b"up":
     with open(labels, "rb") as f:
         for line in f:
             path, t = line.rstrip(b"\n").split(b"\t")
-            if path != b"timestamp":
+            if path != fresh:
                 n = trees.setdefault(t, str(len(trees) + 1).encode())
                 move(os.path.join(staging, path), os.path.join(up, n, path))
     for t, n in trees.items():
@@ -195,10 +195,10 @@ else:
 PY
 
 task: [publish] for d in /work/examples/rsync/.run/up/*/; do test -d "$d" || continue; aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type "$(cat "${d%/}.type")" "$d" s3://example/ | tee -a /work/examples/rsync/.run/publish.txt; done
-task: [label-trees] python3 -I - /work/examples/rsync/staging /work/examples/rsync/.run/up /work/examples/rsync/.run/labels.txt staging <<'PY'
+task: [label-trees] python3 -I - /work/examples/rsync/staging /work/examples/rsync/.run/up /work/examples/rsync/.run/labels.txt staging "$FRESH_KEY" <<'PY'
 import os, shutil, sys
 
-staging, up, labels, to = (os.fsencode(a) for a in sys.argv[1:5])
+staging, up, labels, to, fresh = (os.fsencode(a) for a in sys.argv[1:6])
 
 def move(a, b):
     os.makedirs(os.path.dirname(b), exist_ok=True)
@@ -210,7 +210,7 @@ if to == b"up":
     with open(labels, "rb") as f:
         for line in f:
             path, t = line.rstrip(b"\n").split(b"\t")
-            if path != b"timestamp":
+            if path != fresh:
                 n = trees.setdefault(t, str(len(trees) + 1).encode())
                 move(os.path.join(staging, path), os.path.join(up, n, path))
     for t, n in trees.items():
@@ -226,7 +226,7 @@ else:
     shutil.rmtree(up, ignore_errors=True)
 PY
 
-task: [publish] test ! -f /work/examples/rsync/staging/timestamp || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --content-type "$(awk -F'\t' '$1 == "timestamp" { print $2 }' /work/examples/rsync/.run/labels.txt)" /work/examples/rsync/staging/timestamp s3://example/timestamp | tee -a /work/examples/rsync/.run/publish.txt
+task: [publish] test ! -f /work/examples/rsync/staging/"$FRESH_KEY" || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --content-type "$(awk -F'\t' -v k="$FRESH_KEY" '$1 == k { print $2 }' /work/examples/rsync/.run/labels.txt)" /work/examples/rsync/staging/"$FRESH_KEY" s3://example/"$FRESH_KEY" | tee -a /work/examples/rsync/.run/publish.txt
 task: [merge] (cd /work/examples/rsync/staging && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > /work/examples/rsync/.run/landed.txt
 task: [merge] awk -F'\t' 'FILENAME == ARGV[1] { drop[$1] = 1; next } !($1 in drop)'  /work/examples/rsync/.run/applied.txt | cat - <(LC_ALL=C join -t "$(printf '\t')" /work/examples/rsync/.run/landed.txt ) | LC_ALL=C sort > /work/examples/rsync/.run/applied.new
 task: [push] xz -T0 -c /work/examples/rsync/.run/applied.new > /work/examples/rsync/.run/applied.new.xz
@@ -272,11 +272,11 @@ case $rc in
   *) exit $rc ;;
 esac
 
-task: [pages] PAGE_FOOT='' awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
+task: [pages] awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
   if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
 task: [pages] mkdir -p /work/examples/rsync/staging /work/examples/rsync/.run/slash && find /work/examples/rsync/staging /work/examples/rsync/.run/slash -mindepth 1 -delete && : > /work/examples/rsync/.run/index-real.txt
 task: [pages-select] { cat /work/examples/rsync/.run/applied.txt; awk '{ print $0 "\t\t" }' /work/examples/rsync/.run/upstream-dirs.txt; } | LC_ALL=C sort > /work/examples/rsync/.run/page-state.txt
-task: [pages-select] printf '%s\n' 3 example.katoptra.org.directory.index.html 'index.html index.htm' '' '' '' example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
+task: [pages-select] printf '%s\n' 3 example.katoptra.org.directory.index.html "$INDEX_FILES" "$PAGE_FOOT" "$UPSTREAM" "$CONTACT" example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
 task: [pages-select] awk 'NR == 1 && /^#pages / { next } { print }' /work/examples/rsync/.run/indexed.txt > /work/examples/rsync/.run/index-old.txt
 task: [pages-select] { LC_ALL=C comm -3 /work/examples/rsync/.run/index-old.txt /work/examples/rsync/.run/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'; head -1 /work/examples/rsync/.run/indexed.txt | cmp -s - /work/examples/rsync/.run/index-stamp.txt || cat /work/examples/rsync/.run/page-state.txt; } | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
   { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
@@ -292,7 +292,7 @@ task: [pages-draw] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v 
 task: [pages-draw] test ! -s /work/examples/rsync/.run/index-make.txt || awk -F'\t' -v OFS='\t' 'FILENAME == ARGV[1] { want[$0] = 1; next }
 { n = split($1, c, "/"); d = ""
   for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
-  if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F='' -v N='index.html index.htm' -v X="/work/examples/rsync/.run/index-real.txt" -v U='' -v C='' -v H="example.katoptra.org" -v css=':root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}table{width:100%;border-collapse:collapse;font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;white-space:nowrap}td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}td:first-child{overflow-wrap:anywhere;width:100%}td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}th:last-child,td:last-child{text-align:right}tr:hover td{background:var(--hov)}a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}.s a{color:var(--mut)}.k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}.k:hover{color:var(--a);border-color:var(--a);text-decoration:none}footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}footer a{color:inherit;text-decoration:underline}@media (max-width:36rem){thead{display:none}tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}td{border:0;padding:.1rem .5rem}td:first-child{grid-column:1/-1;padding-top:.45rem}td+td{padding-bottom:.45rem;font-size:.8rem}}' 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+  if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F="$PAGE_FOOT" -v N="$INDEX_FILES" -v X="/work/examples/rsync/.run/index-real.txt" -v U="$UPSTREAM" -v C="$CONTACT" -v H="example.katoptra.org" -v css=':root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}table{width:100%;border-collapse:collapse;font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;white-space:nowrap}td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}td:first-child{overflow-wrap:anywhere;width:100%}td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}th:last-child,td:last-child{text-align:right}tr:hover td{background:var(--hov)}a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}.s a{color:var(--mut)}.k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}.k:hover{color:var(--a);border-color:var(--a);text-decoration:none}footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}footer a{color:inherit;text-decoration:underline}@media (max-width:36rem){thead{display:none}tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}td{border:0;padding:.1rem .5rem}td:first-child{grid-column:1/-1;padding-top:.45rem}td+td{padding-bottom:.45rem;font-size:.8rem}}' 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
 BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
@@ -352,7 +352,7 @@ task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf 
      printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" > "$f.json" && aws s3api delete-objects --bucket example --delete "file://$f.json" | tee -a /work/examples/rsync/.run/publish.txt | { test "$(grep -c Errors)" = 0; }; done
 task: [push] xz -T0 -c /work/examples/rsync/.run/indexed.new > /work/examples/rsync/.run/indexed.new.xz
 task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 /work/examples/rsync/.run/indexed.new.xz s3://example/.state/indexed.txt.xz
-task: [smoke-sample] {  awk -F'\t' '!seen[$2]++' /work/examples/rsync/.run/labeled.txt 2>/dev/null; } | while IFS="$(printf '\t')" read -r k t; do u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+task: [smoke-sample] { awk -F'\t' -v k="$FRESH_KEY" '$1 == k { print $1 "\t" }' /work/examples/rsync/.run/applied.txt 2>/dev/null || true; awk -F'\t' '!seen[$2]++' /work/examples/rsync/.run/labeled.txt 2>/dev/null; } | while IFS="$(printf '\t')" read -r k t; do u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2); want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' /work/examples/rsync/.run/upstream.txt); h=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -r 0-0 -D - -o /dev/null "https://example.katoptra.org/$u"); got=$(printf '%s\n' "$h" | awk 'tolower($1) == "content-range:" { split($3, a, "/"); r = a[2] }
   tolower($1) == "content-length:" { c = $2 }
@@ -365,12 +365,12 @@ function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = s
   tolower($1) == "content-length:" { c = $2 }
   $2 == "416" { z = 1 }
   END { sub(/\r/, "", r); sub(/\r/, "", c); print (r != "" ? r : (z ? 0 : c)) }') bytes, type $(printf '%s\n' "$h" | awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); sub(/^[^:]*:[ \t]*/, ""); print }')"; }; s=$(awk -F'\t' -v k="${d}example.katoptra.org.directory.index.html" '$2 == k { print $1 }' /work/examples/rsync/.run/index-real.txt); if test -n "$s"; then want=$(r "$s"); else want=$(wc -c < "/work/examples/rsync/staging/${d}example.katoptra.org.directory.index.html" | tr -d ' '); test -n "$want"; want="$want bytes"; fi; got=$(r "${d}example.katoptra.org.directory.index.html"); test -n "$s" || got=${got%%,*}; echo "${d}example.katoptra.org.directory.index.html: $got (${s:-page}: $want)"; test "$got" = "$want"; case "https://example.katoptra.org" in http*) test -z "$d" || { p=${d%/}; want=$(wc -c < "/work/examples/rsync/.run/slash/$(printf '%s\n' "$p" | awk -F/ '{ print NF }')/$p" | tr -d ' '); test -n "$want"; got=$(r "$p"); got=${got%%,*}; echo "$p: $got (listing: $want bytes)"; test "$got" = "$want bytes"; } ;; esac; }
-task: [smoke-canary] h=pub/index.html; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' /work/examples/rsync/.run/applied.txt 2>/dev/null); case "https://example.katoptra.org" in http*) ;; *) n= ;; esac; if test -z "$n"; then echo "canary skipped ($h is not in the state, or the URL is not http)"; else aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 "s3://example/$h" /work/examples/rsync/.run/canary.html && curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -A "libwww-perl/6.67" "https://example.katoptra.org/$h" | cmp - /work/examples/rsync/.run/canary.html && echo "$h: $n bytes, served to a libwww-perl client as the bucket holds them"; fi
+task: [smoke-canary] h="$CANARY"; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' /work/examples/rsync/.run/applied.txt 2>/dev/null); case "https://example.katoptra.org" in http*) ;; *) n= ;; esac; if test -z "$n"; then echo "canary skipped ($h is not in the state, or the URL is not http)"; else aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 "s3://example/$h" /work/examples/rsync/.run/canary.html && curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -A "libwww-perl/6.67" "https://example.katoptra.org/$h" | cmp - /work/examples/rsync/.run/canary.html && echo "$h: $n bytes, served to a libwww-perl client as the bucket holds them"; fi
 task: [smoke-encoding] g=$(awk -F'\t' '$1 ~ /\.tar\.gz$/ && $2 > 0 { print $1; exit }' /work/examples/rsync/.run/applied.txt 2>/dev/null); case "https://example.katoptra.org" in http*) ;; *) g= ;; esac; if test -z "$g"; then echo "content-encoding check skipped (no non-empty .tar.gz in the state, or the URL is not http)"; else u=$(printf '%s\n' "$g" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2) && h=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 -r 0-0 -D - -o /dev/null "https://example.katoptra.org/$u") && if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi && echo "$g: served with no content-encoding"; fi
 task: [smoke-unlanded] if test -f /work/examples/rsync/.run/changed.txt && test ! -f /work/examples/rsync/.run/chain; then LC_ALL=C comm -23 /work/examples/rsync/.run/changed.txt /work/examples/rsync/.run/applied.txt > /work/examples/rsync/.run/unlanded.txt; else : > /work/examples/rsync/.run/unlanded.txt; fi; cut -f1 /work/examples/rsync/.run/unlanded.txt | head -20 | while IFS= read -r p; do echo "::warning::listed upstream, never fetched: $p"; done
-task: [fresh] k=timestamp; if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' /work/examples/rsync/.run/applied.txt 2>/dev/null; then echo "freshness skipped ($k is not in the state)"; else h=24; case "$h" in ''|0?*|*[!0-9]*) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac; u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+task: [fresh] k="$FRESH_KEY"; if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' /work/examples/rsync/.run/applied.txt 2>/dev/null; then echo "freshness skipped ($k is not in the state)"; else h=24; case "$h" in ''|0?*|*[!0-9]*) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac; u=$(printf '%s\n' "$k" | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out } { print $0 "\t" enc($0) }' | cut -f2); t=$(curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600 "https://example.katoptra.org/$u" | awk '!/^#/ { for (i = 1; i <= NF; i++) {
   if ($i ~ /^[0-9]+$/ && length($i) >= 9) { print $i; exit }

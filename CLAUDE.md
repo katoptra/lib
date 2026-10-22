@@ -39,6 +39,15 @@ Read that section before you write.
 - A top-level `env:` in an included Taskfile goes to each task of the mirror, also to the
   tasks of the root Taskfile and to the host verbs (verified, 3.53.1). Thus, each command
   that sorts or compares in the engine sets `LC_ALL=C` itself.
+- A task `env:` gets the call vars, and the command gets each value with no change
+  (verified, 3.53.1). Thus, the text values of a mirror go to the commands in `env:`, and
+  a quotation mark or a `$` in a value does not change a command. The render shows
+  `"$FRESH_KEY"`, not the value. `awk -v` changes each backslash escape in a value, and
+  `ENVIRON` does not.
+- A var of the environment wins over a task `env:` with the same name, also an empty var
+  (verified, 3.53.1). Then `{{.FRESH_KEY}}` and `"$FRESH_KEY"` can give two different
+  values in one command. The container gets only the names in `PASS_ENV`, and none of
+  them is a var of the engine. Do not add a var of the engine to `PASS` or to `op.env`.
 - go-task ignores a top-level `set:` in an included Taskfile, also for the tasks of that
   file (verified, 3.53.1). Thus, each engine verb that needs pipefail has
   `set: [pipefail]`.

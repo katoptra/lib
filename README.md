@@ -1336,7 +1336,9 @@ updates:
 
 Then run `task render-update` one time. Commit `render.txt`. After that, use
 `task check`. If a pull request changes the commands of the mirror, `render.txt` shows a
-diff, and that diff is the review.
+diff, and that diff is the review. The engine gives some text values of the mirror to a
+command in `env:`, for example `FRESH_KEY`. The render shows these values as names
+(`"$FRESH_KEY"`), and the root vars of the Taskfile give the values.
 
 ### Rules a mirror keeps
 
@@ -1400,6 +1402,11 @@ these rules:
   reads it. If two commands of a verb read it, put the default in a task var with a
   different name, for example `BATCH_SIZE` in `split`. Write the default one time. Add a
   row to the table in [The vars](#the-vars).
+- Give a text value of a mirror, for example `FRESH_KEY`, to a command in `env:`, not in a
+  template. The shell reads `"$X"`, awk gets the value with `-v` or `ENVIRON`, and Python
+  gets it as an argument. The render then shows the name of the value, not the value. A
+  var of the environment with the same name wins over `env:`. Thus, do not pass such a
+  name into the container (`PASS`).
 - Put each awk or Python program of more than two lines in the `programs` part of `vars:`.
   Write a comment above it that gives its function and its inputs. The command that runs
   the program gives it each input with awk `-v`, `ENVIRON` or an argument. A program has
