@@ -349,8 +349,9 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
 | `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the page state. Then it runs `reconciled` |
-| `index` | A hook. If `INDEX` has a value: it runs `pages`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that upstream removed. Then it writes the stamp and the page state to `.state/indexed.txt.xz`. A mirror with a different landing page overrides `index` |
+| `index` | A hook. If `INDEX` has a value: it runs `pages` and `index-same`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that upstream removed. Then it writes the stamp and the page state to `.state/indexed.txt.xz`. A mirror with a different landing page overrides `index` |
 | `pages` | Writes a page for each directory that the run changed, from the page state, into staging. If the stamp of INDEXED does not agree, it writes a page for each directory. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
+| `index-same` | Operates only if the stamp of INDEXED does not agree. It reads the ETag of each key in the bucket. It removes from staging and from `.run/index-make.txt` each directory whose keys have the same MD5, and writes that directory to `.run/index-same.txt`. If the listing fails, `index` sends each page |
 | `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
 | `smoke-mirror` | A hook, empty here. A mirror with more items to read back writes it |
@@ -507,10 +508,12 @@ Each page shows these items:
   The names are in version sequence (`sort -V`). Thus, `x-2.9` is before `x-2.10`.
 - The time is the mtime of upstream, in UTC, to the minute. The size is in B, KiB, MiB, GiB
   or TiB. The title of the cell gives the exact number of bytes.
-- A signature file or a checksum file (`.sig`, `.asc`, `.sign`, `.sha256` or `.sha512`)
-  is a link on the row of its file. The link text is the suffix, directly after the name.
-  Thus, a search of the page for the full name finds it. A file with such a suffix and no
-  such file has a row of its own.
+- A signature file or a checksum file is a link on the row of its file. The suffixes are
+  `.sig`, `.sign`, `.asc`, `.gpg`, `.dsig`, `.proof`, `.md5`, `.md5sum`, `.sha`, `.sha1`,
+  `.sha224`, `.sha256`, `.sha256sum`, `.sha512`, `.sum` and `.checksums`, in uppercase or
+  lowercase letters. The link text is the suffix, directly after the name. Thus, a search
+  of the page for the full name of the first link finds it. A file with such a suffix and
+  no such file has a row of its own.
 - The footer.
 
 The style of the page is in the page. It has a light and a dark color scheme, and a layout
@@ -541,9 +544,12 @@ and also in the batch, and a page is in no batch.
 `.state/indexed.txt.xz` records the page state that the pages showed last, after a stamp
 line. The stamp is a hash of `PAGE_FORMAT` and of the vars that change a page: `INDEX`,
 `INDEX_FILES`, `PAGE_FOOT`, `UPSTREAM`, `CONTACT` and `HOST`. When the stamp does not
-agree, the run writes all the pages again, one time. Thus, a change to one of these vars,
-or a release with a new `PAGE_FORMAT`, gets to each page. If a run stops before it writes
-that file, the next run writes the same pages again. `reconcile` does not delete the two
+agree, the run makes all the pages again, one time. Thus, a change to one of these vars,
+or a release with a new `PAGE_FORMAT`, gets to each page. `index-same` then reads the ETag
+of each key in the bucket, and `index` sends only the pages with different bytes. R2 gives
+the MD5 of the bytes as the ETag of a key that one PUT wrote. The listing costs one Class A
+operation for each 1,000 keys in the bucket. Each page that does not change saves two. If
+a run stops before it writes that file, the next run makes the same pages again. `reconcile` does not delete the two
 keys of a directory of the page state.
 
 The rsync mirrors of katoptra use one `INDEX`, `katoptra.org.directory.index.html`. Thus,
