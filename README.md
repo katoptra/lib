@@ -1497,9 +1497,9 @@ because `empty-trash` starts that task from the command line in the image. Last,
 encrypts and decrypts one file with `age`.
 
 CI runs the same four steps for each variant on each pull request and on each push to
-`main`. It also runs the test
-cases of the three guards: `.github/validate-vars.sh`, `.github/chain-file.sh` and
-`docker/gpg-gate-check.sh`.
+`main`. It also runs the test cases of the three guards: `.github/validate-vars.sh`,
+`.github/chain-file.sh` and `docker/gpg-gate-check.sh`. It also makes sure that no line of
+`engines/rsync.yml` is longer than 110 characters.
 
 When you change a verb, run `task render-update` in each example. The diff in the pull
 request is the review. `CONTRIBUTING.md` gives the three rules that this repository adds to

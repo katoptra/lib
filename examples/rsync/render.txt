@@ -23,10 +23,13 @@ echo "due: RECONCILE=$r RECONCILE_HOURS=$h, last reconcile $ago: $(test -f /work
 task: [list] rm -f /work/examples/rsync/.run/publish.txt /work/examples/rsync/.run/labeled.txt /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/unlanded.txt /work/examples/rsync/.run/fresh.txt /work/examples/rsync/.run/index-same.txt
 task: [list] mkdir -p /work/examples/rsync/.run /work/examples/rsync/staging
 task: [retry] for i in 1 2 3 4 5; do
-  rc=0; ( TZ=UTC rsync --timeout=300 --contimeout=60 --no-h -8 -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
+  # An exit in CMD stops only the subshell, not the loop. Because of ||, the errexit
+  # of Task does not stop the loop.
+  rc=0; ( TZ=UTC rsync --timeout=300 --contimeout=60 --no-h -8 -rL --list-only rsync://rsync.example.org/pub/ > /work/examples/rsync/.run/listing.txt ) || rc=$?
   case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
-  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1)))
+  echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
 
 task: [normalise] awk '/^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
@@ -59,7 +62,8 @@ task: [split] awk -F'\t' '{ s += $2 } END { printf "upstream: %d objects, %.2f G
 task: [split] mkdir -p /work/examples/rsync/staging && find /work/examples/rsync/staging -mindepth 1 -delete
 task: [split] df -Pk /work/examples/rsync/staging
 task: [split] awk -F'\t' -v kb="$(df -Pk /work/examples/rsync/staging | awk 'NR == 2 { print $4 }')" \
-  '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
+  '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 }
+  END { exit bad }' \
 /work/examples/rsync/.run/changed.txt
 task: [split] rm -f /work/examples/rsync/.run/batch-*.txt
 task: [split] awk -F'\t' -v OFS='\t' -v CAP=$((4 * 1000000000)) -v DIR=/work/examples/rsync/.run -v TL="" 'index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
@@ -73,10 +77,13 @@ function flush(  i, f) { if (!nb) return; f = name(++n)
 task: [prepare] mkdir -p /work/examples/rsync/.run/tl
 task: [prepare] printf '%s\n' tlpkg/texlive.tlpdb.xz tlpkg/texlive.tlpdb.sha512 tlpkg/texlive.tlpdb.sha512.asc tlpkg/gpg/pubring.gpg > /work/examples/rsync/.run/tl/files.txt
 task: [retry] for i in 1 2 3 4 5; do
-  rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/tl/files.txt rsync://rsync.example.org/pub// /work/examples/rsync/.run/tl/ ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
+  # An exit in CMD stops only the subshell, not the loop. Because of ||, the errexit
+  # of Task does not stop the loop.
+  rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/tl/files.txt rsync://rsync.example.org/pub// /work/examples/rsync/.run/tl/ ) || rc=$?
   case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
-  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1)))
+  echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
 
 task: [prepare] xz -dkf /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb.xz
@@ -84,10 +91,13 @@ task: [prepare] cd /work/examples/rsync/.run/tl/tlpkg && shasum -a 512 -c texliv
 task: [fetch] find /work/examples/rsync/staging -mindepth 1 -delete
 task: [fetch] cut -f1  > /work/examples/rsync/.run/files.txt
 task: [retry] for i in 1 2 3 4 5; do
-  rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/files.txt --ignore-missing-args rsync://rsync.example.org/pub/ /work/examples/rsync/staging/ ) || rc=$?   # subshell: an exit in CMD cannot stop the loop. ||: the errexit of Task cannot stop it.
+  # An exit in CMD stops only the subshell, not the loop. Because of ||, the errexit
+  # of Task does not stop the loop.
+  rc=0; ( rsync --timeout=300 --contimeout=60 --no-h -Lt --files-from=/work/examples/rsync/.run/files.txt --ignore-missing-args rsync://rsync.example.org/pub/ /work/examples/rsync/staging/ ) || rc=$?
   case $rc in 0|23|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
   test $i -lt 5 || break
-  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+  s=$((15 * 2 ** i + RANDOM % (2 * 15 + 1)))
+  echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
 done; exit $rc
 
 task: [verify-signed] cd /work/examples/rsync/staging && cut -f1  | grep -E '^/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" && gpgv --status-fd 1 --keyring /work/examples/rsync/.run/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k= '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG / && $NF == k {v=1} END{exit !(g&&v)}') || exit 1; done
@@ -96,7 +106,8 @@ task: [verify-containers] cd /work/examples/rsync/staging && { test "$(grep -c '
 /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
 /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
 /^srccontainerchecksum /{split($0, a, " "); emit(a[2], n ".source")}
-function emit(sum, base,   p, q) { p = TL "/archive/" base ".tar.xz"; q = TL "/archive/" base ".r" r ".tar.xz"
+function emit(sum, base,   p, q) {
+  p = TL "/archive/" base ".tar.xz"; q = TL "/archive/" base ".r" r ".tar.xz"
   if (p in want) { print sum "  " p; delete want[p] }
   if (q in want) { print sum "  " q; delete want[q] } }
 END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }'  /work/examples/rsync/.run/tl/tlpkg/texlive.tlpdb > /work/examples/rsync/.run/tl/sums.txt && shasum -a 512 -c --quiet /work/examples/rsync/.run/tl/sums.txt; }; }
@@ -251,7 +262,8 @@ task: [push] aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout
 task: [rebuild] mv /work/examples/rsync/.run/applied.new /work/examples/rsync/.run/applied.txt
 task: [rebuild] rm -f /work/examples/rsync/.run/rebuild-now
 task: [reconcile] cat /work/examples/rsync/.run/applied.txt /work/examples/rsync/.run/upstream-dirs.txt | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > /work/examples/rsync/.run/index-keys.txt
+  { n = split($1, c, "/"); d = ""
+    for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > /work/examples/rsync/.run/index-keys.txt
 task: [reconcile] cut -f1 /work/examples/rsync/.run/bucket.txt | grep -vE '^\.state/' | awk -v i="/example.katoptra.org.directory.index.html" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i' | LC_ALL=C comm -23 - /work/examples/rsync/.run/index-keys.txt | LC_ALL=C comm -23 - /work/examples/rsync/.run/paths.txt > /work/examples/rsync/.run/orphans.txt
 task: [remove] rm -f /work/examples/rsync/.run/del-*; split -l 1000 -a 4 /work/examples/rsync/.run/orphans.txt /work/examples/rsync/.run/del-
 task: [remove] for f in /work/examples/rsync/.run/del-*; do awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
@@ -273,15 +285,19 @@ case $rc in
 esac
 
 task: [pages] awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
-  if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
+  if (g !~ /^[^%]*(%s[^%]*)?$/) {
+    print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"
+    exit 1 } }'
 task: [pages] mkdir -p /work/examples/rsync/staging /work/examples/rsync/.run/slash && find /work/examples/rsync/staging /work/examples/rsync/.run/slash -mindepth 1 -delete && : > /work/examples/rsync/.run/index-real.txt
 task: [pages-select] { cat /work/examples/rsync/.run/applied.txt; awk '{ print $0 "\t\t" }' /work/examples/rsync/.run/upstream-dirs.txt; } | LC_ALL=C sort > /work/examples/rsync/.run/page-state.txt
 task: [pages-select] printf '%s\n' 3 example.katoptra.org.directory.index.html "$INDEX_FILES" "$PAGE_FOOT" "$UPSTREAM" "$CONTACT" example.katoptra.org | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > /work/examples/rsync/.run/index-stamp.txt
 task: [pages-select] awk 'NR == 1 && /^#pages / { next } { print }' /work/examples/rsync/.run/indexed.txt > /work/examples/rsync/.run/index-old.txt
 task: [pages-select] { LC_ALL=C comm -3 /work/examples/rsync/.run/index-old.txt /work/examples/rsync/.run/page-state.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'; head -1 /work/examples/rsync/.run/indexed.txt | cmp -s - /work/examples/rsync/.run/index-stamp.txt || cat /work/examples/rsync/.run/page-state.txt; } | awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
+  { n = split($1, c, "/"); d = ""
+    for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' | LC_ALL=C sort > /work/examples/rsync/.run/index-dirty.txt
 task: [pages-select] awk -F'\t' '!("" in s) { s[""] = 1; print "" }
-  { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort > /work/examples/rsync/.run/index-dirs.txt
+  { n = split($1, c, "/"); d = ""
+    for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }' /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort > /work/examples/rsync/.run/index-dirs.txt
 task: [pages-select] cat /work/examples/rsync/.run/index-stamp.txt /work/examples/rsync/.run/page-state.txt > /work/examples/rsync/.run/indexed.new
 task: [pages-select] LC_ALL=C comm -23 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt | awk -v i="example.katoptra.org.directory.index.html" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' | awk -F'\t' 'FILENAME == ARGV[1] { f[$1] = 1; next } !($0 in f)' /work/examples/rsync/.run/page-state.txt - > /work/examples/rsync/.run/index-gone.txt
 task: [pages-select] LC_ALL=C comm -12 /work/examples/rsync/.run/index-dirty.txt /work/examples/rsync/.run/index-dirs.txt > /work/examples/rsync/.run/index-make.txt
@@ -291,23 +307,28 @@ task: [pages-draw] test ! -s /work/examples/rsync/.run/index-make.txt || awk -v 
 | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
 task: [pages-draw] test ! -s /work/examples/rsync/.run/index-make.txt || awk -F'\t' -v OFS='\t' 'FILENAME == ARGV[1] { want[$0] = 1; next }
 { n = split($1, c, "/"); d = ""
-  for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
+  for (i = 1; i < n; i++) {
+    if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }
+    d = d c[i] "/" }
   if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' /work/examples/rsync/.run/index-make.txt /work/examples/rsync/.run/page-state.txt | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v I="example.katoptra.org.directory.index.html" -v F="$PAGE_FOOT" -v N="$INDEX_FILES" -v X="/work/examples/rsync/.run/index-real.txt" -v U="$UPSTREAM" -v C="$CONTACT" -v H="example.katoptra.org" -v css=':root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}table{width:100%;border-collapse:collapse;font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;white-space:nowrap}td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}td:first-child{overflow-wrap:anywhere;width:100%}td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}th:last-child,td:last-child{text-align:right}tr:hover td{background:var(--hov)}a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}.s a{color:var(--mut)}.k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}.k:hover{color:var(--a);border-color:var(--a);text-decoration:none}footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}footer a{color:inherit;text-decoration:underline}@media (max-width:36rem){thead{display:none}tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}td{border:0;padding:.1rem .5rem}td:first-child{grid-column:1/-1;padding-top:.45rem}td+td{padding-bottom:.45rem;font-size:.8rem}}' 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
 function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
     out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
 BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
   G = "\\.(sig|sign|asc|gpg|dsig|proof|md5|md5sum|sha|sha1|sha224|sha256|sha256sum|sha512|sum|checksums)$"
   if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1) }
-function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
+function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s)
+  gsub(/"/, "\\&quot;", s); return s }
 function grp(n,  s, o) { s = sprintf("%.0f", n); o = ""
-  while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } return s o }
+  while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) }
+  return s o }
 function iec(n,  u, i) { if (n < 1024) return sprintf("%.0f B", n)
   split("KiB MiB GiB TiB", u, " "); n /= 1024; i = 1; while (n >= 1024 && i < 4) { n /= 1024; i++ }
   return sprintf(n < 10 ? "%.1f %s" : "%.0f %s", n, u[i]) }
 function ymd(t) { gsub(/\//, "-", t); return substr(t, 1, 16) }
 function foot(  t) { if (F != "") return "<footer>" sprintf(F, enc(cur)) "</footer>"
   t = (U == "" ? "" : "Mirror of " esc(U) enc(cur) ".")
-  if (C != "") t = t (t == "" ? "" : " ") "Report a problem to <a href=\"mailto:" esc(C) "\">" esc(C) "</a>."
+  if (C != "") t = t (t == "" ? "" : " ") "Report a problem to " \
+    "<a href=\"mailto:" esc(C) "\">" esc(C) "</a>."
   return (t == "" ? "" : "<footer>" t "</footer>") }
 function open(d) { cur = d; live = 1; real = ""; nd = 0; nfl = 0; tot = 0; split("", has) }
 function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
@@ -315,19 +336,26 @@ function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
   for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
     while (match(tolower(r), G)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
     if (x != "") { fold[i] = 1
-      links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
+      links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" \
+        esc(substr(fname[i], length(x) + 1)) "</a>" } }
   c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
   if (nfl) c = c (c == "" ? "" : ", ") grp(nfl) (nfl == 1 ? " file" : " files") ", " iec(tot)
   if (c == "") c = "This directory is empty."
   fa = S cur I; if (real != "") print cur real "\t" cur I > X
   if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/"); fb = R k "/" b }
-  w("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Index of /" esc(cur) "</title>\n")
-  w("<base href=\"/" enc(cur) "\">\n<style>" css "</style></head><body>\n<h1>Index of /" esc(cur) "</h1><p>" c "</p>\n")
+  w("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\n" \
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" \
+    "<title>Index of /" esc(cur) "</title>\n")
+  w("<base href=\"/" enc(cur) "\">\n<style>" css "</style></head><body>\n" \
+    "<h1>Index of /" esc(cur) "</h1><p>" c "</p>\n")
   w("<table><thead><tr><th>Name</th><th>Modified (UTC)</th><th>Size</th></tr></thead><tbody>\n")
   if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
-  for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
+  for (i = 1; i <= nd; i++)
+    w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
   for (i = 1; i <= nfl; i++) if (!(i in fold))
-    w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
+    w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" \
+      esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td>" \
+      "<td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
   w("</tbody></table>" foot() "</body></html>\n")
   if (real == "") close(fa); if (cur != "") close(fb) }
 !live || $1 != cur { if (live) shut(); open($1) }
@@ -339,10 +367,13 @@ END { if (live) shut() }'
 task: [index-same] aws s3api list-objects-v2 --bucket example --query 'Contents[].[Key,ETag]' --output text > /work/examples/rsync/.run/bucket-etags.txt || { echo "index-same: the listing failed; index sends each page"; : > /work/examples/rsync/.run/bucket-etags.txt; }
 task: [index-same] { (cd /work/examples/rsync/staging && find . -type f -exec md5sum {} +) | sed 's#  \./#\tp\t#'; for d in /work/examples/rsync/.run/slash/*/; do test -d "$d" || continue; (cd "$d" && find . -type f -exec md5sum {} +) | sed 's#  \./#\ts\t#'; done; } > /work/examples/rsync/.run/page-md5.txt
 task: [index-same] awk -F'\t' -v E="/work/examples/rsync/.run/bucket-etags.txt" -v H="/work/examples/rsync/.run/page-md5.txt" -v I="example.katoptra.org.directory.index.html" -v S="/work/examples/rsync/staging/" -v R="/work/examples/rsync/.run/slash/" -v Y="/work/examples/rsync/.run/index-same.txt" -v M="/work/examples/rsync/.run/index-make.new" 'FILENAME == E { gsub(/"/, "", $2); e[$1] = $2; next }
-FILENAME == H { if ($2 == "s") d = $3 "/"; else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I)); else next
+FILENAME == H { if ($2 == "s") d = $3 "/"
+  else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I))
+  else next
   seen[d] = 1; if (e[$3] != $1) diff[d] = 1; next }
 !($0 in seen) || ($0 in diff) { print > M; next }
-{ print > Y; print S $0 I; if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }' /work/examples/rsync/.run/bucket-etags.txt /work/examples/rsync/.run/page-md5.txt /work/examples/rsync/.run/index-make.txt | tr '\n' '\0' | xargs -0r rm -f
+{ print > Y; print S $0 I
+  if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }' /work/examples/rsync/.run/bucket-etags.txt /work/examples/rsync/.run/page-md5.txt /work/examples/rsync/.run/index-make.txt | tr '\n' '\0' | xargs -0r rm -f
 task: [index-same] touch /work/examples/rsync/.run/index-same.txt /work/examples/rsync/.run/index-make.new && mv /work/examples/rsync/.run/index-make.new /work/examples/rsync/.run/index-make.txt
 task: [index] test ! -s /work/examples/rsync/.run/index-make.txt || aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' /work/examples/rsync/staging/ s3://example/
 task: [index] for d in /work/examples/rsync/.run/slash/*/; do test -d "$d" || continue; aws s3 cp --no-progress --cli-connect-timeout 60 --cli-read-timeout 300 --recursive --content-type 'text/html; charset=utf-8' "$d" s3://example/; done

@@ -26,6 +26,13 @@ jobs:
       - name: The op verb tries again only when the command did not start
         if: matrix.variant == 'rsync'
         run: sh .github/op-retry-check.sh
+      # A line of the rsync engine that is longer than 110 characters is too long to read in
+      # a diff or in a review.
+      - name: No line of the rsync engine is longer than 110 characters
+        if: matrix.variant == 'rsync'
+        run: >-
+          awk 'length > 110 { print FILENAME ":" FNR ": " length " characters"; bad = 1 } END { exit bad }'
+          engines/rsync.yml
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Actions keeps the layers in its cache, with one scope for each variant. release
       # reads the same scope. Thus, for a tag, the build makes new layers only for the

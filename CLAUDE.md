@@ -98,7 +98,7 @@ Read that section before you write.
   no key without a slash. Thus, if the only changed directory of a run is the root, that
   awk sends no line to `xargs`.
 - A `>-` folded block keeps a newline if a line that continues the line before it starts
-  with more spaces than the lines around it. The two-line awk programs in the commands of
+  with more spaces than the lines around it. The short awk programs in the commands of
   `split`, `pages` and `pages-draw` use this. Put a backslash at the end of a shell line
   that must continue. `task check` shows how the block renders.
 - On a macOS disk, two directory names that are different only in uppercase and lowercase
@@ -159,6 +159,7 @@ cd examples/rsync  && task image-build && task run -- task tools && task check &
 cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
 sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
 sh .github/op-retry-check.sh
+awk 'length > 110 { print FILENAME ":" FNR ": " length " characters"; bad = 1 } END { exit bad }' engines/rsync.yml
 ```
 
 After a change to a verb, run `task render-update` to update the `render.txt` files.
