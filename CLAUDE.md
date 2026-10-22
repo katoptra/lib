@@ -30,8 +30,18 @@ Read that section before you write.
   does not get a call var. Thus, write each default one time, inline or in a task var.
 - Do not put `dir:` on an engine verb. Task can read a flattened Taskfile of `includes:`
   from a path. In that condition, it adds each `dir:`, also an absolute one, to the
-  directory of that Taskfile (verified, 3.53.1). Thus, `verify` starts each command with
-  `cd {{.STAGING}}`.
+  directory of that Taskfile (verified, 3.53.1). Thus, each step of `verify` starts each
+  command with `cd {{.STAGING}}`.
+- A task that a verb starts does not get the call vars of that verb. Thus, `smoke`,
+  `verify` and `pages` give their steps the vars that the steps read, with a YAML anchor
+  (`vars: &smoke`, then `vars: *smoke`). Give only text vars in this method. A call var is
+  text: a root `X: 0` goes through as "0", and then `{{if .X}}` is true (verified, 3.53.1).
+- A top-level `env:` in an included Taskfile goes to each task of the mirror, also to the
+  tasks of the root Taskfile and to the host verbs (verified, 3.53.1). Thus, each command
+  that sorts or compares in the engine sets `LC_ALL=C` itself.
+- go-task ignores a top-level `set:` in an included Taskfile, also for the tasks of that
+  file (verified, 3.53.1). Thus, each engine verb that needs pipefail has
+  `set: [pipefail]`.
 - Use only the keys `trusted-hosts` and `cache-expiry` in `.taskrc.yml`. Task ignores a key
   that it does not know, and it shows no warning. In that condition, it downloads the remote
   Taskfiles again each time that it runs.
@@ -75,13 +85,13 @@ Read that section before you write.
   `<variant>-v2`. The two tags move. When they move, all mirrors get the release.
 - Give `-r` to each `xargs` if a filter can make its input empty. GNU `xargs` runs its
   command one time on empty input. A guard on the file that a pipe reads is not a guard on
-  the input of `xargs`. For example, the `SLASH` awk of `pages` removes the root, which has
+  the input of `xargs`. For example, the `SLASH` awk of `pages-draw` removes the root, which has
   no key without a slash. Thus, if the only changed directory of a run is the root, that
   awk sends no line to `xargs`.
 - A `>-` folded block keeps a newline if a line that continues the line before it starts
   with more spaces than the lines around it. The two-line awk programs in the commands of
-  `split` and `pages` use this. Put a backslash at the end of a shell line that must
-  continue. `task check` shows how the block renders.
+  `split`, `pages` and `pages-draw` use this. Put a backslash at the end of a shell line
+  that must continue. `task check` shows how the block renders.
 - On a macOS disk, two directory names that are different only in uppercase and lowercase
   letters are one directory. Thus, the pages that a laptop writes from a listing of
   upstream are not complete if upstream has two such directories. For example, CTAN has
@@ -95,9 +105,9 @@ Read that section before you write.
   show this problem.
 - The `status:` check of `prepare` reads all of `changed.txt`, not the batch. Thus,
   `prepare` runs on almost all runs. But if the delta of a run has no `TL` path, `prepare`
-  does not run, and `.run/tl` is not there. Each branch of `verify` reads the batch. The
-  container branch and the decision-batch branch use `.run/tl` only if the batch has a
-  `TL` path.
+  does not run, and `.run/tl` is not there. Each step of `verify` reads the batch.
+  `verify-containers` and `verify-decision` use `.run/tl` only if the batch has a `TL`
+  path.
 - Do not make a task internal if a host verb starts it with its name in the image. go-task
   does not start an internal task from the command line. For example, `empty-trash` starts
   `empty-trash-pipeline` with `task op`. Thus, `empty-trash-pipeline` is not internal.
@@ -121,9 +131,9 @@ Read that section before you write.
   of the directories that do not change, and they show the old format. The stamp in
   `.state/indexed.txt.xz` includes `PAGE_FORMAT`. A new value makes each mirror write all
   of its pages again, one time.
-- `PAGE_HTML`, the page awk of `pages`, writes each page directly to its two files. Do not
-  make the page with a string that gets a row at a time. That method copies the full string
-  for each row. The `archive/` directory of TeX Live has approximately 34k rows.
+- `PAGE_HTML`, the page awk of `pages-draw`, writes each page directly to its two files. Do
+  not make the page with a string that gets a row at a time. That method copies the full
+  string for each row. The `archive/` directory of TeX Live has approximately 34k rows.
 - In a check that reads the output of a task with `grep`, find text that only the output
   has. go-task shows each command before it runs it, and that line also has the text of
   each `echo` in the command. For example, `offline` finds `not 08` in the output of

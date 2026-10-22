@@ -344,16 +344,16 @@ The verbs with a broken line are hooks. These hooks do no work until a mirror se
 | `prepare` | A hook. If `TL_KEY` has a value and the delta has a `TL` path: it fetches the tlpdb and compares its signature with the pinned key |
 | `batches` | Runs `fetch`, `verify`, `publish` and `checkpoint` for each of the first `MAX_BATCHES` batches. If there are remaining batches, it makes the file `.run/chain` |
 | `fetch` | Copies the files of the batch into `staging/` with rsync, and copies the target of each symlink. If upstream deletes a path after the listing, `fetch` does not copy it |
-| `verify` | A hook. If `TL_KEY` has a value: it compares each signed file and each container in the batch with the tlpdb |
+| `verify` | A hook. If `TL_KEY` has a value: it compares each signed file and each container in the batch with the tlpdb. It has three steps: `verify-signed`, `verify-containers` and `verify-decision` |
 | `publish` | Runs `label` on the batch. Then it runs `aws s3 cp --recursive` one time for each type, with the files of each type in a different tree. It sends each file as one PutObject, and it makes no listing of the bucket. The engine does not use `aws s3 sync`. The `FRESH_KEY` file goes last |
 | `label` | Writes `.run/labels.txt`: the Content-Type of each file in staging, from its name and its first KiB. A text type gets a charset if the file is UTF-8. Refer to [Content types](#content-types) |
 | `checkpoint` | Runs `merge` to add the uploaded files to the state. Then it uploads the state as one PutObject, and it deletes the files in staging |
 | `delete` | Removes the keys in `deleted.txt` from the bucket, 1,000 in each call, and removes them from the state. It waits for the run that uploads the last batch |
 | `reconcile` | If `due` wrote `.run/reconcile`, it runs `rebuild`. Then it deletes each key that is not a path of upstream, a key in `OWN`, or a directory of the page state. Then it runs `reconciled` |
 | `index` | A hook. If `INDEX` has a value: it runs `pages` and `index-same`, uploads the two sets of keys, runs `index-copy`, which copies the index files of `.run/index-real.txt` to their page keys, and removes the keys of the directories that upstream removed. Then it writes the stamp and the page state to `.state/indexed.txt.xz`. A mirror with a different landing page overrides `index` |
-| `pages` | Writes a page for each directory that the run changed, from the page state, into staging. If the stamp of INDEXED does not agree, it writes a page for each directory. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt` |
+| `pages` | Writes a page for each directory that the run changed, from the page state, into staging. If the stamp of INDEXED does not agree, it writes a page for each directory. The keys with no slash at the end go in one tree for each depth. A directory with a file in `INDEX_FILES` gets only the key with no slash, and a line in `.run/index-real.txt`. Its steps are `pages-select`, which finds the directories, and `pages-draw` |
 | `index-same` | Operates only if the stamp of INDEXED does not agree. It reads the ETag of each key in the bucket. It removes from staging and from `.run/index-make.txt` each directory whose keys have the same MD5, and writes that directory to `.run/index-same.txt`. If the listing fails, `index` sends each page |
-| `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Then it runs `fresh` and `smoke-mirror` |
+| `smoke` | Reads a sample back from `HOST`. The list below the table gives each item of the sample. Its steps are `smoke-sample`, `smoke-tlpdb`, `smoke-page`, `smoke-canary`, `smoke-encoding` and `smoke-unlanded`, which finds the paths that rsync did not send. Then it runs `fresh` and `smoke-mirror` |
 | `fresh` | If `FRESH_KEY` has a value: it reads the clock of upstream in that file, from `HOST`. If the clock is more than `FRESH_HOURS` before the time of the run, it stops the run |
 | `smoke-mirror` | A hook, empty here. A mirror with more items to read back writes it |
 | `report-engine` | A hook: the rows of the engine in the run summary |
@@ -637,9 +637,15 @@ change that var.
 
 #### When a run fails
 
-The job log shows the step that stopped the run. The name of that step is the verb. The
-table in this section gives each verb of the engine that can stop a run, with the cause and
-the repair. The README of a mirror gives only the values of that mirror: its ceiling, its
+The job log shows the verb that stopped the run. If the verb has steps, the log also shows
+the step. For example:
+
+```text
+task: Failed to run task "pipeline": task: Failed to run task "smoke": task: Failed to run task "smoke-canary": exit status 1
+```
+
+The table in this section gives each verb or step of the engine that can stop a run, with
+the cause and the repair. The README of a mirror gives only the values of that mirror: its ceiling, its
 upstream, and the steps that only that mirror has.
 
 To find the step, and the number of files that the mirror does not have, use these
@@ -672,9 +678,11 @@ the work. On a laptop,
 | `split`: the ceiling | The tree is larger than `CEILING_GB`. The mirror gets no new files until you increase `CEILING_GB`. A larger ceiling also increases the cost | Increase `CEILING_GB` |
 | `split`: the disk | One file of the delta is too large for the disk of the runner, with 1 GiB free for the other data. The log shows `no room for <path>`. `CEILING_GB` has no effect on this check | Remove the file from the listing with `FILTER`, or give the run a larger disk |
 | `prepare`, `verify` | A signature or a checksum did not agree. The engine uploaded no file from that batch, and clients continue to get the last good copy | If TeX Live changed its key, compare `TL_KEY` with https://www.tug.org/texlive/verify.html. Do not use a different source for the key |
-| `smoke`: the canary | The domain served bytes that are not the bytes in the bucket, or it rejected a Perl client. A zone rule is missing, or the scope of a zone rule became wider. The bucket is correct | Examine the Configuration Rule of the zone. Refer to [The parts of a bucket](#the-parts-of-a-bucket) |
-| `smoke`: the Content-Encoding | A `.tar.gz` had a `Content-Encoding` when `smoke` read it. Clients then decompress it while they download it | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Refer to [Content types](#content-types) |
-| `smoke`: the type or the length | A key of the sample had a Content-Type that is not its label, or a length that is not its length in the listing. The CLI, R2 or the zone changed the object | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Then examine the rules of the zone |
+| `smoke-canary` | The domain served bytes that are not the bytes in the bucket, or it rejected a Perl client. A zone rule is missing, or the scope of a zone rule became wider. The bucket is correct | Examine the Configuration Rule of the zone. Refer to [The parts of a bucket](#the-parts-of-a-bucket) |
+| `smoke-encoding` | A `.tar.gz` had a `Content-Encoding` when `smoke` read it. Clients then decompress it while they download it | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Refer to [Content types](#content-types) |
+| `smoke-sample` | A key of the sample had a Content-Type that is not its label, or a length that is not its length in the listing. The CLI, R2 or the zone changed the object | Examine `label` and the AWS CLI version in `toolchain.lock.toml`. Then examine the rules of the zone |
+| `smoke-tlpdb` | The domain served a `texlive.tlpdb.sha512` that is not the copy that `prepare` verified | Start the run again. If the problem continues, examine the rules of the zone |
+| `smoke-page` | A page that the run wrote did not have the length of the page in staging, at its page key or at its key with no slash. If the page key is a copy of an index file, its length or its Content-Type was not that of the file. R2 or the zone changed the page | Examine the rules of the zone. Refer to [Directory pages](#directory-pages) |
 | `fresh`: the clock stopped | The clock in the `FRESH_KEY` file did not change for more than `FRESH_HOURS`. Upstream stopped, or the mirror that `SOURCE` gives stopped. A secondary mirror can stop its sync, and rsync can continue to connect to it. The run copied all the bytes that it got | Examine upstream. If `SOURCE` is a secondary mirror, set `SOURCE` to a different secondary mirror. If upstream stopped, no change in the mirror is necessary |
 
 These procedures repair other problems:
@@ -1337,10 +1345,12 @@ diff, and that diff is the review.
 - **A task that a verb runs does not get the call vars of that verb.** Also, a root var
   cannot read a var of an included Taskfile. A verb can run a hook with a `RUN` or a
   `STAGING` that a caller can change. In that condition, the verb must give these vars to
-  the hook. `smoke` does this.
+  the hook. `smoke` does this. `smoke`, `verify` and `pages` also give their steps the vars
+  that the steps read, with a YAML anchor.
 - **Do not put `dir:` on a verb of an included Taskfile.** If task reads a flattened
   Taskfile of `includes:` from a path, it adds each `dir:` to the directory of that
-  Taskfile, also an absolute `dir:`. Thus, `verify` starts each command with `cd`.
+  Taskfile, also an absolute `dir:`. Thus, each step of `verify` starts each command with
+  `cd`.
 - **`render` puts an empty directory on `.run`.** Thus, a `sh:` var that reads `.run` when
   task reads the Taskfile gives the same render in each checkout. A verb that reads
   `.run` at that time must accept an empty `.run`.

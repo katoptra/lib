@@ -632,9 +632,27 @@ tasks:
     # Not internal. Thus, a mirror can start it manually on a batch from a fixture.
     requires: {vars: [B]}
     status: ['test -z "{{.TL_KEY}}"']   # the no-op hook until a mirror pins a key
-    # Each command starts with a cd to STAGING, not dir:. go-task resolves dir: against
-    # the directory of an include that it reads from a path, and no call var can change
-    # that.
+    # Each command of its steps starts with a cd to STAGING, not dir:. go-task resolves
+    # dir: against the directory of an include that it reads from a path, and no call var
+    # can change that. The steps operate without pipefail, because the grep in
+    # verify-signed can correctly find nothing.
+    cmds:
+      # A task does not see the call vars of the task that starts it. Thus, verify gives its
+      # steps the vars that they read, with the anchor batch. In a run, these are the values
+      # that verify has. An offline check gives different values.
+      - task: verify-signed
+        vars: &batch
+          B: '{{.B}}'
+          RUN: '{{.RUN}}'
+          STAGING: '{{.STAGING}}'
+          TL: '{{.TL}}'
+          TL_KEY: '{{.TL_KEY}}'
+      - {task: verify-containers, vars: *batch}
+      - {task: verify-decision, vars: *batch}
+
+  verify-signed:
+    desc: Each signed sha512 of batch B, with shasum, then gpgv against the keyring that prepare pinned
+    internal: true
     cmds:
       # This command examines each signed sha512 in this batch (the installers and
       # updaters at the root, and the tlpdb) with the keyring that prepare pinned. The
@@ -644,12 +662,16 @@ tasks:
         (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
         gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k={{.TL_KEY}} '{{.GPGCHECK}}')
         || exit 1; done
+
+  verify-containers:
+    desc: Each TL container of batch B against its checksum in the tlpdb that prepare verified
+    internal: true
+    cmds:
       # Each TL container in this batch must agree with the checksum that the tlpdb gives
       # for it (TLPDB_SUMS). prepare examined that tlpdb.
       #
       # The awk program writes to a file, not to a pipe. Thus, the status of the command
-      # is the status of awk. verify operates without pipefail, because the grep in the
-      # first command of verify can correctly find nothing.
+      # is the status of awk.
       #
       # A batch with no container does not do this check. prepare makes RUN/tl, and
       # prepare operates only when the delta has a path in TL. Thus, in an hour with no
@@ -665,6 +687,11 @@ tasks:
         cd {{.STAGING}} && { test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
         awk -F'\t' -v TL="{{.TL}}" '{{.TLPDB_SUMS}}' {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
         shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }; }
+
+  verify-decision:
+    desc: When batch B holds the tlpdb, the tlpdb against prepare's, its .xz against it, and each container that it names against the bucket after this run
+    internal: true
+    cmds:
       # The decision batch. For this batch, these conditions must be correct:
       #   - The tlpdb in the batch is the tlpdb that prepare examined at the start of the
       #     run.
@@ -971,6 +998,27 @@ tasks:
         PAGE_FOOT={{shellQuote (.PAGE_FOOT | default "")}} awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
           if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
+      # A task does not see the call vars of the task that starts it. Thus, pages gives its
+      # steps the vars that they read, with the anchor pages. In a run, these are the values
+      # that pages has. An offline check gives different values.
+      - task: pages-select
+        vars: &pages
+          RUN: '{{.RUN}}'
+          STAGING: '{{.STAGING}}'
+          SLASH: '{{.SLASH}}'
+          HOST: '{{.HOST}}'
+          INDEX: '{{.INDEX}}'
+          INDEX_FILES: '{{.INDEX_FILES}}'
+          UPSTREAM: '{{.UPSTREAM}}'
+          CONTACT: '{{.CONTACT}}'
+          PAGE_FOOT: '{{.PAGE_FOOT}}'
+      - {task: pages-draw, vars: *pages}
+
+  pages-select:
+    desc: The page state, the stamp and RUN/indexed.new; then RUN/index-gone.txt, the keys to remove, and RUN/index-make.txt, the directories to draw
+    internal: true
+    set: [pipefail]
+    cmds:
       # The page state is the state and a line "dir/ TAB TAB" for each directory of
       # upstream. Thus, a directory with no file also gets a page, and the page of its
       # parent shows it.
@@ -1013,6 +1061,12 @@ tasks:
         | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }'
         | awk -F'\t' 'FILENAME == ARGV[1] { f[$1] = 1; next } !($0 in f)' {{.RUN}}/page-state.txt - > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
+
+  pages-draw:
+    desc: A page in STAGING for each directory of RUN/index-make.txt, and its slashless copy in SLASH
+    internal: true
+    set: [pipefail]
+    cmds:
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. All files in
       # one tree have the same number of components. Thus, no file is the parent directory
@@ -1044,13 +1098,37 @@ tasks:
 
   smoke:
     desc: Read a key of every type this run published back through the domain, size against the listing and type against the label; with TL set the tlpdb sha512 against the verified copy; with INDEX set one redrawn page under both keys; with CANARY set the canary, as a Perl client, against the bucket's copy; no Content-Encoding on a .tar.gz; warn of paths that never land; fresh; then the mirror's own checks, smoke-mirror
+    cmds:
+      # A task does not see the call vars of the task that starts it. Thus, smoke gives its
+      # steps the vars that they read, with the anchor smoke. It gives fresh and
+      # smoke-mirror the three vars that a check reads. In a run, these are the values that
+      # smoke has. An offline check gives different values.
+      - task: smoke-sample
+        vars: &smoke
+          RUN: '{{.RUN}}'
+          STAGING: '{{.STAGING}}'
+          URL: '{{.URL}}'
+          TL: '{{.TL}}'
+          INDEX: '{{.INDEX}}'
+          CANARY: '{{.CANARY}}'
+          FRESH_KEY: '{{.FRESH_KEY}}'
+      - {task: smoke-tlpdb, vars: *smoke}
+      - {task: smoke-page, vars: *smoke}
+      - {task: smoke-canary, vars: *smoke}
+      - {task: smoke-encoding, vars: *smoke}
+      - {task: smoke-unlanded, vars: *smoke}
+      - {task: fresh, vars: {RUN: '{{.RUN}}', URL: '{{.URL}}'}}
+      - {task: smoke-mirror, vars: {RUN: '{{.RUN}}', STAGING: '{{.STAGING}}', URL: '{{.URL}}'}}
+
+  smoke-sample:
+    desc: The first key of each type that label gave this run, and the FRESH_KEY file when the state has it, read back through the domain; size against the listing, and with http the type against the label
+    internal: true
     vars:
-      # The sample in the first command of smoke reads the FRESH_KEY file only when the
-      # state shows that the file is in the bucket. The file is in the decision batch,
-      # which is the last batch. A first fill that stops at MAX_BATCHES does not do that
-      # batch. The bucket then gives 404 for the key, because no run put it in the bucket.
-      # The run that puts the file in the bucket, and each run after it, include the file
-      # in the sample.
+      # The sample reads the FRESH_KEY file only when the state shows that the file is in
+      # the bucket. The file is in the decision batch, which is the last batch. A first
+      # fill that stops at MAX_BATCHES does not do that batch. The bucket then gives 404 for
+      # the key, because no run put it in the bucket. The run that puts the file in the
+      # bucket, and each run after it, include the file in the sample.
       #
       # An {{if}} on a string goes to {{else}} only when the string is empty. Thus, the
       # path is the flag and also the key.
@@ -1077,6 +1155,11 @@ tasks:
         ct=$(printf '%s\n' "$h" | {{.CTYPE}});
         echo "$k: $got bytes (listing: $want), served as ${ct:-no type} (label: ${t:-none})"; test "$got" = "$want" || exit 1;
         case "{{.URL}}" in http*) test -z "$t" || test "$ct" = "$t" || exit 1 ;; esac; done
+
+  smoke-tlpdb:
+    desc: With TL set and a tlpdb that prepare verified, the tlpdb sha512 read back through the domain against the verified copy
+    internal: true
+    cmds:
       # The tlpdb key is in the decision batch, the last batch. Thus, a run that stopped
       # at MAX_BATCHES did not publish the copy of this hour, and it has nothing to
       # compare.
@@ -1084,6 +1167,11 @@ tasks:
         {{if .TL}}test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test -f {{.RUN}}/chain ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512{{else}}echo "no TL subtree: no tlpdb to read back"{{end}}
+
+  smoke-page:
+    desc: With INDEX set, the last directory of RUN/index-make.txt read back through the domain at its page key, and with http at its slashless key
+    internal: true
+    cmds:
       # This command reads one of the pages that this run made, at its two keys, with each
       # key in the URL (no zone rule is necessary). r gives the size and the type of a
       # key, with the same ranged read of one byte as the sample.
@@ -1111,6 +1199,11 @@ tasks:
         want=$(wc -c < "{{.RUN}}/slash/$(printf '%s\n' "$p" | awk -F/ '{ print NF }')/$p" | tr -d ' '); test -n "$want";
         got=$(r "$p"); got=${got%%,*}; echo "$p: $got (listing: $want bytes)"; test "$got" = "$want bytes"; } ;; esac;
         }{{else}}echo "no INDEX: no directory pages to read back"{{end}}
+
+  smoke-canary:
+    desc: With CANARY set, in the state and over http, the canary read as a Perl client against the bucket's copy
+    internal: true
+    cmds:
       # The HTML rewriters of Cloudflare are between R2 and the client. Thus, the check
       # compares the object with the file that the domain sends. A size check is not
       # sufficient. Automatic HTTPS Rewrites can make a link one byte longer, while the
@@ -1131,6 +1224,11 @@ tasks:
         aws s3 cp {{.AWS_FLAGS}} "{{.S3}}/$h" {{.RUN}}/canary.html &&
         {{.CURL}} -A "libwww-perl/6.67" "{{.URL}}/$h" | cmp - {{.RUN}}/canary.html &&
         echo "$h: $n bytes, served to a libwww-perl client as the bucket holds them"; fi{{else}}echo "no CANARY: the edge's HTML rewriters and client filter go unchecked"{{end}}
+
+  smoke-encoding:
+    desc: Over http, the first non-empty .tar.gz of the state read back with no Content-Encoding
+    internal: true
+    cmds:
       # A Content-Encoding on an object tells each client to decompress the file during
       # the download. Thus, the client gets a tarball as a tar. The mirror guidelines of
       # GNU recommend no Content-Encoding. For foo.tar.gz, guess_type in Python gives
@@ -1148,6 +1246,11 @@ tasks:
         u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.HEADERS}} "{{.URL}}/$u") &&
         if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi &&
         echo "$g: served with no content-encoding"; fi
+
+  smoke-unlanded:
+    desc: RUN/unlanded.txt, the lines of the delta that the state lacks after the last batch; the first 20 as warnings on the run
+    internal: true
+    cmds:
       # A path in the listing of upstream that rsync cannot send (exit 23, which retry
       # accepts) does not go into the bucket. Thus, each run downloads it again, and the
       # run shows no failure. When the run did all the batches, the lines of the delta
@@ -1157,11 +1260,6 @@ tasks:
         if test -f {{.RUN}}/changed.txt && test ! -f {{.RUN}}/chain;
         then LC_ALL=C comm -23 {{.RUN}}/changed.txt {{.RUN}}/applied.txt > {{.RUN}}/unlanded.txt; else : > {{.RUN}}/unlanded.txt; fi;
         cut -f1 {{.RUN}}/unlanded.txt | head -20 | while IFS= read -r p; do echo "::warning::listed upstream, never fetched: $p"; done
-      # A task does not see the call vars of the task that starts it. Thus, smoke gives
-      # the three vars that a check reads. In a run, they are the values that smoke has.
-      # An offline check gives different values.
-      - {task: fresh, vars: {RUN: '{{.RUN}}', URL: '{{.URL}}'}}
-      - {task: smoke-mirror, vars: {RUN: '{{.RUN}}', STAGING: '{{.STAGING}}', URL: '{{.URL}}'}}
 
   fresh:
     desc: With FRESH_KEY set and in the state, read it through the domain and fail the run when the upstream clock in it is FRESH_HOURS (24) old; a source that stalls otherwise leaves every run green
