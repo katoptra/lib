@@ -5,9 +5,11 @@ are applicable to this repository. This repository adds three rules:
 
 - **Do not put a `vars:` default in `toolbox.yml` or in an engine for a var that a mirror
   sets.** If a `vars:` block has a default, the run uses that default, not the root value
-  of the mirror. Put each default inline in the command: `{{.X | default N}}`. `IMAGE` is
-  different: each engine sets `IMAGE: '{{.IMAGE | default "..."}}'` in `vars:`. Thus, if
-  the toolbox entry of `includes:` gives `IMAGE`, the run uses that value.
+  of the mirror. Put each default inline in the command: `{{.X | default N}}`. If two
+  commands of a verb read the var, put the default in a task var with a different name
+  (`BATCH_SIZE: '{{.BATCH_GB | default 4}}'` in `split`). `IMAGE` is different: each
+  engine sets `IMAGE: '{{.IMAGE | default "..."}}'` in `vars:`. Thus, if the toolbox entry
+  of `includes:` gives `IMAGE`, the run uses that value.
 - **Do not change the name of a verb in `toolbox.yml` or in an engine.** A mirror includes
   these files with `flatten: true`. Then the host verbs and the verbs in the container use
   one namespace.

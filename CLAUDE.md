@@ -25,7 +25,9 @@ Read that section before you write.
   command, the call var `TL_KEY` is available.
 - Some vars have a different name and read a var that a mirror can set, for example
   `BATCHES_MAX` from `MAX_BATCHES`. Such a var also gets the value on the command line
-  (verified). Thus, write each default one time, inline.
+  (verified). A task var with a different name, for example `BATCH_SIZE` in `split`, also
+  gets a call var (verified: `split-refuses` gives `BATCH_GB` as a call var). A global var
+  does not get a call var. Thus, write each default one time, inline or in a task var.
 - Do not put `dir:` on an engine verb. Task can read a flattened Taskfile of `includes:`
   from a path. In that condition, it adds each `dir:`, also an absolute one, to the
   directory of that Taskfile (verified, 3.53.1). Thus, `verify` starts each command with

@@ -288,8 +288,9 @@ different verb. Thus, the pipeline of a mirror has the same verbs with each engi
 
 An engine reads the root vars of the mirror and the environment. It has no `vars:` default
 for a var that a mirror sets. With such a default, the run uses the default, not the value
-of the mirror. Each var that a mirror can set has its default inline:
-`{{.X | default N}}`.
+of the mirror. Each var that a mirror can set has its default in one location: inline, as
+`{{.X | default N}}`, or in a task var with a different name, for example `BATCH_SIZE` in
+`split`.
 
 `IMAGE` is different. The engine sets it in `vars:` as `{{.IMAGE | default "..."}}`. Thus,
 the run uses an `IMAGE` in the toolbox entry of `includes:`, not the default of the engine.
@@ -603,8 +604,8 @@ A control byte is not a NUL. Thus, a `.sty` file of CTAN with a `^Z` at its end 
 
 #### The vars
 
-A mirror always sets `SOURCE`, `BUCKET` and `HOST` in its root vars. All other vars have an
-inline default, and a mirror sets only the vars that are different:
+A mirror always sets `SOURCE`, `BUCKET` and `HOST` in its root vars. All other vars have a
+default in the engine, and a mirror sets only the vars that are different:
 
 | Var | Default | Function |
 |---|---|---|
@@ -1386,7 +1387,9 @@ these rules:
 
 - A new hook is an empty task, with a `desc` that gives the mirror that fills it. The verb that runs the hook gives it the vars that it uses.
 - A new var that a mirror can set is an inline `{{.X | default N}}` in the command that
-  reads it. Write the default one time. Add a row to the table in [The vars](#the-vars).
+  reads it. If two commands of a verb read it, put the default in a task var with a
+  different name, for example `BATCH_SIZE` in `split`. Write the default one time. Add a
+  row to the table in [The vars](#the-vars).
 - Put each awk or Python program of more than two lines in the `programs` part of `vars:`.
   Write a comment above it that gives its function and its inputs. The command that runs
   the program gives it each input with awk `-v`, `ENVIRON` or an argument. A program has

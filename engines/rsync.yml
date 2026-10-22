@@ -11,41 +11,8 @@
 #      a reconcile is due. RECONCILE and RECONCILE_HOURS are the vars of due.
 # The mirror puts these verbs in sequence in its pipeline. Its root vars identify it.
 #
-# The vars that the engine reads from the mirror:
-#   - SOURCE, BUCKET and HOST. These vars are necessary.
-#   - These vars have an inline default:
-#     - CEILING_GB. A value of 0 (or no value) gives no ceiling.
-#     - BATCH_GB: 4. Digits, with no 0 first.
-#     - MAX_BATCHES: 4.
-#     - LIST_FLOOR. A value of 0 (or no value) gives no guard for a truncated listing. A
-#       listing must have more than LIST_FLOOR lines. If not, the run stops.
-#     - RETRY_BASE: 15 s.
-#     - TL and TL_KEY: a signed TeX Live subtree, and the fingerprint of the key that
-#       gives its signature. An empty value gives no signature checks.
-#     - FILTER: the rsync filter arguments for the listing. An empty value gives the full
-#       tree.
-#     - OWN: the keys at the bucket root that the mirror supplies, not upstream. reconcile
-#       does not remove them. Put a space between each two keys. An empty value gives
-#       none.
-#     - INDEX: the key suffix of the directory pages. When INDEX is set, index makes a
-#       page for each directory.
-#     - INDEX_FILES: the names of the upstream index files, in sequence, with a space
-#       between each two names. When a directory has such a file, its page key is a copy
-#       of the first one, and its key without the slash keeps the listing. An empty value
-#       gives a listing for each directory.
-#     - UPSTREAM: the URL of the upstream tree. The footer of each page gives it as text,
-#       with the path of the directory. An empty value gives a footer with no upstream.
-#     - CONTACT: the e-mail address for problem reports, in the footer of each page. An
-#       empty value gives the first label of HOST, "@" and the other labels of HOST.
-#     - PAGE_FOOT: HTML for the footer of each page, in place of the footer from UPSTREAM
-#       and CONTACT, with one %s for the encoded path of the directory and %% for a %.
-#       An empty value gives the footer from UPSTREAM and CONTACT.
-#     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
-#       CANARY is set, smoke reads the file through the domain as a Perl client.
-#     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
-#       check of that clock.
-#     - FRESH_HOURS: 24. Digits, with no 0 first. When the clock in FRESH_KEY is more
-#       than FRESH_HOURS before the time of the check, smoke stops the run with a failure.
+# A mirror sets SOURCE, BUCKET and HOST. The table "The vars" in the README of lib gives
+# each other var that the engine reads from the mirror, with its default.
 #
 # The label verb selects the Content-Type of each object. The AWS CLI does not select it.
 #
@@ -95,6 +62,14 @@ vars:
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
+  # The headers of a ranged read of one byte. SIZE and CTYPE read them.
+  HEADERS: '{{.CURL}} -r 0-0 -D - -o /dev/null'
+  # The KiB that split and fetch keep free on the disk of staging: 1 GiB for the text files
+  # of RUN and for the OS.
+  HEADROOM_KIB: '1048576'
+  # A case pattern for a value that is not a whole number: empty, a 0 first, or a character
+  # that is not a digit. Shell arithmetic reads 08 as octal and 0x1 as hexadecimal.
+  NOT_WHOLE: "''|0?*|*[!0-9]*"
 
   # ---- programs ----
   # The awk and Python programs of the verbs. A program gets each input from awk -v,
@@ -149,6 +124,9 @@ vars:
       if ($i ~ /^[0-9]+$/ && length($i) >= 9) { print $i; exit }
       if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
         split($i, d, "-"); print d[1] "-" d[2] "-" d[3] " " d[4] ":" d[5]; exit } } }'
+  # normalise: the mtime column of a line of rsync --list-only, with a space before and after
+  # it. It always has the same width.
+  MTIME_RE: ' [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
   # normalise: a line "path TAB size TAB mtime" for each regular file of a listing (rsync
   # --list-only). The size column can contain commas (rsync 3.x), or it can be empty for an
   # empty file (openrsync). Thus, the program finds the size from the date, which always has
@@ -159,7 +137,7 @@ vars:
   # to it. -L resolves the two, and the mirror sends the two. A mirror that wants only the
   # stable names makes the listing smaller with FILTER. tlnet does this.
   LIST_FILES: |-
-    /^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
+    /^-/ && match($0, /{{.MTIME_RE}}/) {
       path = substr($0, RSTART + RLENGTH); mtime = substr($0, RSTART + 1, RLENGTH - 2)
       size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
       print path "\t" size + 0 "\t" mtime }
@@ -167,7 +145,7 @@ vars:
   # root (".") is not in the output. pages makes a page for each directory, also for a
   # directory with no file.
   LIST_DIRS: |-
-    /^d/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
+    /^d/ && match($0, /{{.MTIME_RE}}/) {
       path = substr($0, RSTART + RLENGTH); if (path != ".") print path "/" }
   # split: divide the delta (changed.txt) into the batch files DIR/batch-NNNN.txt. CAP is the
   # number of bytes for each batch. The program adds the sizes in the listing. It uses only
@@ -198,7 +176,7 @@ vars:
   # The two names have the same bytes, and thus the same checksum. The END clause is a second
   # check: it rejects a container that is not in the tlpdb.
   TLPDB_SUMS: |-
-    NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
+    FILENAME == ARGV[1] { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
     /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
     /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
     /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
@@ -322,7 +300,7 @@ vars:
   # for that directory. The e entry opens the page and adds no row. Thus, a directory with no
   # file also gets a page.
   PAGE_ENTRIES: |-
-    NR == FNR { want[$0] = 1; next }
+    FILENAME == ARGV[1] { want[$0] = 1; next }
     { n = split($1, c, "/"); d = ""
       for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
       if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }
@@ -552,19 +530,22 @@ tasks:
       # into the delta. Thus, verify examines it with the new sha512 in staging. The
       # pattern is the same as in verify.
       - >-
-        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
+        awk -F'\t' -v TL="{{.TL}}" 'FILENAME == ARGV[1] { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
         $1 in want' {{.RUN}}/changed.txt {{.RUN}}/upstream.txt | LC_ALL=C sort -u -o {{.RUN}}/changed.txt - {{.RUN}}/changed.txt
       - cut -f1 {{.RUN}}/upstream.txt > {{.RUN}}/paths.txt
       - cut -f1 {{.RUN}}/applied.txt | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
 
   split:
     desc: Refuse a tree over CEILING_GB (when set) or a file the disk cannot hold; split changed.txt into RUN/batch-NNNN.txt
+    vars:
+      # A task var, not a global var, because a caller can give BATCH_GB as a call var.
+      BATCH_SIZE: '{{.BATCH_GB | default 4}}'
     cmds:
       # BATCH_GB goes into shell arithmetic below. There, 08 is 0 and 0x1 is 1. Thus, this
       # command stops the run on each value that is not a whole number.
       - >-
-        b={{shellQuote (print (.BATCH_GB | default 4))}};
-        case "$b" in ''|0?*|*[!0-9]*) echo "split: BATCH_GB is a whole number, not $b" >&2; exit 1 ;; esac
+        b={{shellQuote .BATCH_SIZE}};
+        case "$b" in {{.NOT_WHOLE}}) echo "split: BATCH_GB is a whole number, not $b" >&2; exit 1 ;; esac
       # CEILING_GB unset or 0 gives no ceiling. The command always prints the size.
       - >-
         {{if .CEILING_GB}}awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
@@ -576,14 +557,14 @@ tasks:
       # RUN and for the OS.
       - >-
         awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" \
-          '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
+          '$2 / 1024 > kb - {{.HEADROOM_KIB}} { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
         {{.RUN}}/changed.txt
       - rm -f {{.RUN}}/batch-*.txt
       # BATCH_GB goes into the command with no quotes, because it is in $(( )), where a
       # quoted operand is a syntax error. The first command of split stops the run before
       # this line on each value that is not a whole number.
       - >-
-        awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}"
+        awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_SIZE}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}"
         '{{.CUT_BATCHES}}' {{.RUN}}/changed.txt
 
   # ---- the batches ----
@@ -630,7 +611,7 @@ tasks:
     internal: true
     requires: {vars: [B]}
     preconditions:
-      - sh: test "$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" -gt "$(awk -F'\t' '{ s += $2 } END { print int(s / 1024) + 1048576 }' {{.B}})"
+      - sh: test "$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" -gt "$(awk -F'\t' '{ s += $2 } END { print int(s / 1024) + {{.HEADROOM_KIB}} }' {{.B}})"
         msg: "not enough free disk for {{.B}}"
     cmds:
       - find {{.STAGING}} -mindepth 1 -delete
@@ -1091,7 +1072,7 @@ tasks:
         | while IFS="$(printf '\t')" read -r k t; do
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
         want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
-        h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u");
+        h=$({{.HEADERS}} "{{.URL}}/$u");
         got=$(printf '%s\n' "$h" | {{.SIZE}});
         ct=$(printf '%s\n' "$h" | {{.CTYPE}});
         echo "$k: $got bytes (listing: $want), served as ${ct:-no type} (label: ${t:-none})"; test "$got" = "$want" || exit 1;
@@ -1119,7 +1100,7 @@ tasks:
       # together.
       - >-
         {{if .INDEX}}test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
-        r() { h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$(printf '%s\n' "$1" | {{.ENCODE}} | cut -f2)");
+        r() { h=$({{.HEADERS}} "{{.URL}}/$(printf '%s\n' "$1" | {{.ENCODE}} | cut -f2)");
         echo "$(printf '%s\n' "$h" | {{.SIZE}}) bytes, type $(printf '%s\n' "$h" | {{.CTYPE}})"; };
         s=$(awk -F'\t' -v k="${d}{{.INDEX}}" '$2 == k { print $1 }' {{.RUN}}/index-real.txt);
         if test -n "$s"; then want=$(r "$s");
@@ -1164,7 +1145,7 @@ tasks:
         g=$(awk -F'\t' '$1 ~ /\.tar\.gz$/ && $2 > 0 { print $1; exit }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) g= ;; esac;
         if test -z "$g"; then echo "content-encoding check skipped (no non-empty .tar.gz in the state, or the URL is not http)"; else
-        u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u") &&
+        u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.HEADERS}} "{{.URL}}/$u") &&
         if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi &&
         echo "$g: served with no content-encoding"; fi
       # A path in the listing of upstream that rsync cannot send (exit 23, which retry
@@ -1192,7 +1173,7 @@ tasks:
         {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
         if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
         then echo "freshness skipped ($k is not in the state)"; else
-        h={{shellQuote .FRESH_H}}; case "$h" in ''|0?*|*[!0-9]*) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
+        h={{shellQuote .FRESH_H}}; case "$h" in {{.NOT_WHOLE}}) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
         t=$({{.CURL}} "{{.URL}}/$u" | {{.STAMP}});
         case "$t" in *-*) t=$(date -u -d "$t" +%s) ;; esac; test -n "$t";
@@ -1211,20 +1192,21 @@ tasks:
       - |
         n() { test -f "$1" && wc -l < "$1" || echo 0; }
         gb() { test -f "$1" && awk -F'\t' '{ s += $2 } END { printf "%.2f", s / 1e9 }' "$1" || echo 0.00; }
-        cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+        out="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        cat >> "$out" <<EOF
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(gb {{.RUN}}/upstream.txt) GB upstream, at [{{.URL}}/]({{.URL}}/) |
         | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.BATCHES_MAX}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next run" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(awk '/^upload:/ { n++ } END { print n + 0 }' {{.RUN}}/publish.txt 2>/dev/null || echo 0) uploaded, $(cut -f2 {{.RUN}}/labeled.txt 2>/dev/null | sort -u | wc -l | tr -d ' ') types |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && echo "$(gb {{.RUN}}/bucket.txt) GB in $(n {{.RUN}}/bucket.txt) objects (reconciled)" || echo "not measured this run"){{if .CEILING_GB}} of the {{.CEILING_GB}} GB ceiling{{end}} |
         EOF
-      # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
-      - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # With INDEX set, the pages that index made and the keys that it removed.
-      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn and sent, $(test -f {{.RUN}}/index-same.txt && wc -l < {{.RUN}}/index-same.txt || echo 0) redrawn and not sent (the bucket had the same bytes), $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # Rows that show only when they have data.
-      - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
+        test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(n {{.RUN}}/tl/missing.txt) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "$out"
+        # With INDEX set, the pages that index made and the keys that it removed.
+        test -z "{{.INDEX}}" || echo "| Directory pages | $(n {{.RUN}}/index-make.txt) redrawn and sent, $(n {{.RUN}}/index-same.txt) redrawn and not sent (the bucket had the same bytes), $(n {{.RUN}}/index-real.txt) with a copy of an index file as the page key, $(n {{.RUN}}/index-gone.txt) keys removed |" >> "$out"
+        # Rows that show only when they have data.
+        test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "$out"
+        test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "$out"
 
   retry:
     desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; 23 (a path it could not read, a dangling symlink under -L) and 24 (file vanished mid-transfer) are successes
