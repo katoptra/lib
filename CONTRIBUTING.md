@@ -32,7 +32,6 @@ are applicable to this repository. This repository adds three rules:
 cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
 cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
 sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
-awk 'length > 110 { print FILENAME ":" FNR ": " length " characters"; bad = 1 } END { exit bad }' engines/rsync.yml
 ```
 
 CI does these steps for each image, on each pull request and on each push to `main`:
@@ -42,15 +41,4 @@ CI does these steps for each image, on each pull request and on each push to `ma
 3. It runs `task check`.
 4. It runs `task run -- task offline`.
 
-It also runs the three guards one time, in the job of the `rsync` image. That job also
-makes sure that no line of `engines/rsync.yml` is longer than 110 characters. To make a
-line shorter, use the methods that the file uses:
-
-- A `desc:` becomes a folded block (`desc: >-`). YAML joins its lines with spaces, and the
-  text does not change.
-- A shell line in a `>-` block breaks at a space. A line with more spaces than the lines
-  around it keeps its newline. Thus, do not break such a line inside a quoted string.
-- A long awk line breaks after `;` or `{`, before `else`, or with a backslash at the end of
-  the line. A string can become two strings, one after the other.
-- An `echo` gets several arguments. It puts one space between two arguments, and the
-  output does not change.
+It also runs the three guards one time, in the job of the `rsync` image.

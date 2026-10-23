@@ -16,13 +16,8 @@
 #     engine include adds are also not available:
 #       - The rsync engine: pipeline, plan-pipeline, list, normalise, state, pull, push,
 #         rebuild, diff and split. Also batches, batch, fetch, publish, label,
-#         label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages,
-#         index-same, index-copy, smoke and fresh. Its hooks are prepare, verify, index,
-#         smoke-mirror and report-engine. The steps of three verbs add these names:
-#           - verify: verify-signed, verify-containers and verify-decision
-#           - pages: pages-select and pages-draw
-#           - smoke: smoke-sample, smoke-tlpdb, smoke-page, smoke-canary, smoke-encoding
-#             and smoke-unlanded.
+#         label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages, smoke
+#         and fresh. Its hooks are prepare, verify, index, smoke-mirror and report-engine.
 #       - The proton engine: pipeline, plan-pipeline, session, session-push, seal,
 #         session-seal, age, pull, push, pd, destination, upload, confirm, list-folder,
 #         trash, empty-trash and empty-trash-pipeline. Its hooks are stage, prune and
