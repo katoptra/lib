@@ -395,6 +395,14 @@ tasks:
         printf '%s\t1\t-\n' new.txt old.txt timestamp > $r/applied.txt
       - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: new.txt}}
       - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: timestamp}}
+      # fresh gets FRESH_KEY with no change. A quotation mark, a $, a backslash escape and a
+      # non-ASCII character in the name do not change a command. fresh writes fresh.txt
+      # only when it reads the clock.
+      - |
+        r={{.F}}/run-fresh; k='a"b$c\nd é.txt'; rm -f $r/fresh.txt
+        echo $(($(date -u +%s) - 3600)) > "$r/srv/$k"; printf '%s\t1\t-\n' "$k" >> $r/applied.txt
+      - {task: fresh, vars: {RUN: '{{.F}}/run-fresh', URL: 'file://{{.F}}/run-fresh/srv', FRESH_KEY: 'a"b$c\nd é.txt'}}
+      - test -s {{.F}}/run-fresh/fresh.txt
       - '! task fresh-refuses 2>/dev/null'
       # fresh refuses a FRESH_HOURS with a 0 first. Shell arithmetic reads 010 as 8 hours.
       - task fresh-hours H=010 2>&1 | grep -q 'FRESH_HOURS is a whole number, not 010'

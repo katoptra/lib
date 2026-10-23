@@ -11,47 +11,10 @@
 #      a reconcile is due. RECONCILE and RECONCILE_HOURS are the vars of due.
 # The mirror puts these verbs in sequence in its pipeline. Its root vars identify it.
 #
-# The vars that the engine reads from the mirror:
-#   - SOURCE, BUCKET and HOST. These vars are necessary.
-#   - These vars have an inline default:
-#     - CEILING_GB. A value of 0 (or no value) gives no ceiling.
-#     - BATCH_GB: 4. Digits, with no 0 first.
-#     - MAX_BATCHES: 4.
-#     - LIST_FLOOR. A value of 0 (or no value) gives no guard for a truncated listing. A
-#       listing must have more than LIST_FLOOR lines. If not, the run stops.
-#     - RETRY_BASE: 15 s.
-#     - TL and TL_KEY: a signed TeX Live subtree, and the fingerprint of the key that
-#       gives its signature. An empty value gives no signature checks.
-#     - FILTER: the rsync filter arguments for the listing. An empty value gives the full
-#       tree.
-#     - OWN: the keys at the bucket root that the mirror supplies, not upstream. reconcile
-#       does not remove them. Put a space between each two keys. An empty value gives
-#       none.
-#     - INDEX: the key suffix of the directory pages. When INDEX is set, index makes a
-#       page for each directory.
-#     - INDEX_FILES: the names of the upstream index files, in sequence, with a space
-#       between each two names. When a directory has such a file, its page key is a copy
-#       of the first one, and its key without the slash keeps the listing. An empty value
-#       gives a listing for each directory.
-#     - UPSTREAM: the URL of the upstream tree. The footer of each page gives it as text,
-#       with the path of the directory. An empty value gives a footer with no upstream.
-#     - CONTACT: the e-mail address for problem reports, in the footer of each page. An
-#       empty value gives the first label of HOST, "@" and the other labels of HOST.
-#     - PAGE_FOOT: HTML for the footer of each page, in place of the footer from UPSTREAM
-#       and CONTACT, with one %s for the encoded path of the directory and %% for a %.
-#       An empty value gives the footer from UPSTREAM and CONTACT.
-#     - CANARY: a file with bytes that the HTML rewriters of the zone can change. When
-#       CANARY is set, smoke reads the file through the domain as a Perl client.
-#     - FRESH_KEY: a file in which upstream records its clock. An empty value gives no
-#       check of that clock.
-#     - FRESH_HOURS: 24. Digits, with no 0 first. When the clock in FRESH_KEY is more
-#       than FRESH_HOURS before the time of the check, smoke stops the run with a failure.
+# A mirror sets SOURCE, BUCKET and HOST. The table "The vars" in the README of lib gives
+# each other var that the engine reads from the mirror, with its default.
 #
-# The label verb here selects the Content-Type of each object. The AWS CLI does not select
-# it, for two causes:
-#   - The CLI keeps the first value of the result of guess_type in Python. Thus, the CLI
-#     sends foo.diff.gz as a diff.
-#   - The results of the CLI change with the image.
+# The label verb selects the Content-Type of each object. The AWS CLI does not select it.
 #
 # Hooks: prepare, verify, index, smoke-mirror and report-engine are the verbs that a
 # mirror can replace. To replace one, a mirror puts it in `excludes:` on this include and
@@ -70,6 +33,15 @@
 #     MAX_BATCHES.
 #   - A var with a different name that reads the tunable continues to see the command
 #     line. Thus, each default is in one location only, in the vars and verbs that follow.
+#     When two commands of a verb read a tunable, the default is in a task var with a
+#     different name, for example BATCH_SIZE in split.
+#   - A text value of the mirror (FRESH_KEY, CANARY, PAGE_FOOT, UPSTREAM, CONTACT and
+#     INDEX_FILES) goes to a command in `env:`, not in a template. The shell reads "$X",
+#     awk reads ENVIRON["X"], and Python gets the value as an argument. Thus, no value goes
+#     into the text of a program, and a quotation mark, a `$` or a backslash in a value
+#     cannot change a command. A var of the environment with the same name wins over
+#     `env:`. The container gets only the names in PASS_ENV of the toolbox. Thus, do not
+#     pass one of these names into the container.
 # The other vars get their values from the vars of the mirror, or they are helper vars of
 # the engine.
 version: '3'
@@ -87,8 +59,8 @@ vars:
   # The page state as the directory pages showed it the last time, after a stamp line.
   INDEXED: .state/indexed.txt.xz
   # The format of the directory pages. Increase it at each change to the HTML or the style
-  # of a page. The stamp in INDEXED includes it. Thus, when a mirror gets a release with a
-  # new format, its next run makes all of its pages again.
+  # of a page (PAGE_HTML and PAGE_CSS). The stamp in INDEXED includes it. Thus, when a
+  # mirror gets a release with a new format, its next run makes all of its pages again.
   PAGE_FORMAT: '3'
   # Batches for each run. The remaining batches chain the next run.
   BATCHES_MAX: '{{.MAX_BATCHES | default 4}}'
@@ -96,31 +68,23 @@ vars:
   RETRY_S: '{{.RETRY_BASE | default 15}}'
   # Hours. After 28 h, the monitors of GNU and CTAN show a mirror as expired.
   FRESH_H: '{{.FRESH_HOURS | default 24}}'
-  # The type of a compressed file, then the name endings that select it. These are the
-  # types of ftp.gnu.org. The ending is more important than the remaining part of the
-  # name: foo.diff.gz is gzip. A browser that gets text/x-diff shows the compressed bytes
-  # as text. label uses this table for each upload. The endings are case-sensitive: .Z is
-  # compress.
-  COMPRESSED: |-
-    application/x-gzip .gz .tgz .taz .tz .svgz
-    application/x-bzip2 .bz2 .tbz2 .tbz
-    application/x-xz .xz .txz
-    application/x-compress .Z
-    application/zstd .zst .tzst
-    application/x-lzip .lz
-    application/x-lzma .lzma
-  # The clock of upstream in a timestamp file, as Unix time or as "YYYY-MM-DD HH:MM" for
-  # date -d. mirror-updated-timestamp.txt (gnu) and 00_TIME.txt (Savannah) start with Unix
-  # time. The timestamp file of CTAN holds 2026-10-08-05-02, after a comment and the name
-  # of the master.
-  STAMP: |-
-    awk '!/^#/ { for (i = 1; i <= NF; i++) {
-      if ($i ~ /^[0-9]+$/ && length($i) >= 9) { print $i; exit }
-      if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
-        split($i, d, "-"); print d[1] "-" d[2] "-" d[3] " " d[4] ":" d[5]; exit } } }'
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
+  # The headers of a ranged read of one byte. SIZE and CTYPE read them.
+  HEADERS: '{{.CURL}} -r 0-0 -D - -o /dev/null'
+  # The KiB that split and fetch keep free on the disk of staging: 1 GiB for the text files
+  # of RUN and for the OS.
+  HEADROOM_KIB: '1048576'
+  # A case pattern for a value that is not a whole number: empty, a 0 first, or a character
+  # that is not a digit. Shell arithmetic reads 08 as octal and 0x1 as hexadecimal.
+  NOT_WHOLE: "''|0?*|*[!0-9]*"
+
+  # ---- programs ----
+  # The awk and Python programs of the verbs. A program gets each input from awk -v,
+  # ENVIRON or an argument. It has no template of a var that a caller can give, because
+  # task renders a global var one time, without the call vars (lib CLAUDE.md, Hazards).
+
   # The keyring is a usual file from the same mirror as the signature. Thus, only the
   # pinned fingerprint identifies the correct key. GOODSIG is also necessary, because gpgv
   # gives VALIDSIG and exit 0 for an expired key or a revoked key. This is an awk program
@@ -145,7 +109,7 @@ vars:
     awk 'tolower($1) == "content-type:" { sub(/\r$/, ""); sub(/^[^:]*:[ \t]*/, ""); print }'
   # Percent-encoding for awk. enc(s) keeps the unreserved set and "/", and it encodes all
   # other characters. Upstream paths contain spaces and ( ) [ ] { } & # > ~ $. This text
-  # goes into ENCODE, and into the awk program of the pages verb.
+  # goes into ENCODE and PAGE_HTML.
   URLENC: |-
     BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
     function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
@@ -160,6 +124,324 @@ vars:
   ANCESTORS: |-
     awk -F'\t' '!("" in s) { s[""] = 1; print "" }
       { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
+  # The clock of upstream in a timestamp file, as Unix time or as "YYYY-MM-DD HH:MM" for
+  # date -d. mirror-updated-timestamp.txt (gnu) and 00_TIME.txt (Savannah) start with Unix
+  # time. The timestamp file of CTAN holds 2026-10-08-05-02, after a comment and the name
+  # of the master.
+  STAMP: |-
+    awk '!/^#/ { for (i = 1; i <= NF; i++) {
+      if ($i ~ /^[0-9]+$/ && length($i) >= 9) { print $i; exit }
+      if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
+        split($i, d, "-"); print d[1] "-" d[2] "-" d[3] " " d[4] ":" d[5]; exit } } }'
+  # normalise: the mtime column of a line of rsync --list-only, with a space before and after
+  # it. It always has the same width.
+  MTIME_RE: ' [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
+  # normalise: a line "path TAB size TAB mtime" for each regular file of a listing (rsync
+  # --list-only). The size column can contain commas (rsync 3.x), or it can be empty for an
+  # empty file (openrsync). Thus, the program finds the size from the date, which always has
+  # the same width, and not from a field number.
+  #
+  # The program keeps each regular file in the listing of upstream. tlnet keeps each
+  # container with a revision-stamped name, and a symlink with the stable name is adjacent
+  # to it. -L resolves the two, and the mirror sends the two. A mirror that wants only the
+  # stable names makes the listing smaller with FILTER. tlnet does this.
+  LIST_FILES: |-
+    /^-/ && match($0, /{{.MTIME_RE}}/) {
+      path = substr($0, RSTART + RLENGTH); mtime = substr($0, RSTART + 1, RLENGTH - 2)
+      size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
+      print path "\t" size + 0 "\t" mtime }
+  # normalise: a line "path/" for each directory of a listing, with a slash at the end. The
+  # root (".") is not in the output. pages makes a page for each directory, also for a
+  # directory with no file.
+  LIST_DIRS: |-
+    /^d/ && match($0, /{{.MTIME_RE}}/) {
+      path = substr($0, RSTART + RLENGTH); if (path != ".") print path "/" }
+  # split: divide the delta (changed.txt) into the batch files DIR/batch-NNNN.txt. CAP is the
+  # number of bytes for each batch. The program adds the sizes in the listing. It uses only
+  # the listing to divide the delta, not the files. A file that is larger than BATCH_GB is a
+  # batch with no other file, and the batch that the program fills does not change.
+  #
+  # The decision batch is the last batch. It holds tlpkg/ of TL (the tlpdb) and the files at
+  # the bucket root, which include the FRESH_KEY file. A client reads these files before it
+  # selects the files to download. Because this batch is the last batch, these files cannot
+  # identify a key that is not in the bucket at that time.
+  #
+  # A path that has the previous path as its first part (x, x.sha512, x.sha512.asc) does not
+  # start a new batch. Also, diff puts x in the delta when x.sha512 is in the delta. Thus,
+  # verify always finds the file that its signature identifies.
+  CUT_BATCHES: |-
+    index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
+    $2 > CAP { f = name(++n); print > f; close(f); next }
+    { if (sz + $2 > CAP && index($1, prev) != 1) flush(); buf[++nb] = $0; sz += $2; prev = $1 }
+    END { flush(); if (nd) { f = name(++n); for (i = 1; i <= nd; i++) print dec[i] > f; close(f) }
+          printf "%d lines in %d batches\n", NR, n }
+    function name(i) { return sprintf("%s/batch-%04d.txt", DIR, i) }
+    function flush(  i, f) { if (!nb) return; f = name(++n)
+      for (i = 1; i <= nb; i++) print buf[i] > f; close(f); nb = sz = 0; split("", buf) }
+  # verify: a "sum  path" line for shasum -c for each TL container of a batch. The inputs are
+  # the batch, then the tlpdb. The program uses the two names that upstream has:
+  #   - the stable name, which the tlpdb gives
+  #   - the revision-stamped name, which the tlpdb gives through the revision.
+  # The two names have the same bytes, and thus the same checksum. The END clause is a second
+  # check: it rejects a container that is not in the tlpdb.
+  TLPDB_SUMS: |-
+    FILENAME == ARGV[1] { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
+    /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
+    /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
+    /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
+    /^srccontainerchecksum /{split($0, a, " "); emit(a[2], n ".source")}
+    function emit(sum, base,   p, q) { p = TL "/archive/" base ".tar.xz"; q = TL "/archive/" base ".r" r ".tar.xz"
+      if (p in want) { print sum "  " p; delete want[p] }
+      if (q in want) { print sum "  " q; delete want[q] } }
+    END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }
+  # verify: the path of each container that a tlpdb gives, at its stable name.
+  TLPDB_NAMES: |-
+    /^name /{n=$2}
+    /^containerchecksum /{print TL "/archive/" n ".tar.xz"}
+    /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
+    /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}
+  # The type of a compressed file, then the name endings that select it. These are the
+  # types of ftp.gnu.org. The ending is more important than the remaining part of the
+  # name: foo.diff.gz is gzip. A browser that gets text/x-diff shows the compressed bytes
+  # as text. label uses this table for each upload. The endings are case-sensitive: .Z is
+  # compress.
+  COMPRESSED: |-
+    application/x-gzip .gz .tgz .taz .tz .svgz
+    application/x-bzip2 .bz2 .tbz2 .tbz
+    application/x-xz .xz .txz
+    application/x-compress .Z
+    application/zstd .zst .tzst
+    application/x-lzip .lz
+    application/x-lzma .lzma
+  # label: a line "path TAB type" for each file under a directory. The arguments are the
+  # directory and COMPRESSED. The rules, in sequence:
+  #   1. A COMPRESSED ending gives the type directly.
+  #   2. An ending that Python reads as compressed and that COMPRESSED does not have (.br)
+  #      gets the type of a signature, or application/octet-stream. It does not get text,
+  #      because brotli has no signature to find.
+  #   3. If not, the mime.types of the image gives the type. But a type that a browser shows
+  #      (text, XML, JSON, JavaScript, PDF) must agree with the bytes. If the bytes are
+  #      compressed, contain a NUL, or are a PDF without %PDF-, they give the type.
+  #   4. A name that has no type in mime.types gets a type from its bytes. This type is a
+  #      known signature, text/plain without a NUL, or application/octet-stream with a NUL.
+  #   5. A text/* type gets "; charset=utf-8" when the full file is UTF-8 (ASCII is UTF-8). A
+  #      browser then shows its characters correctly. The bytes of other text do not tell
+  #      their encoding. Thus, other text gets no charset.
+  # A control byte is not a NUL: some .sty files of CTAN contain ^Z, and they stay text.
+  # Without "./", guess_type reads a name with a colon as a URL scheme.
+  LABEL_PY: |-
+    import codecs, mimetypes, os, sys
+
+    root, table = sys.argv[1], sys.argv[2]
+    endings = {s: f[0] for f in map(str.split, table.splitlines()) if f for s in f[1:]}
+    signatures = ((b"\x1f\x8b", "application/x-gzip"), (b"BZh", "application/x-bzip2"),
+                  (b"\xfd7zXZ\x00", "application/x-xz"), (b"\x1f\x9d", "application/x-compress"),
+                  (b"\x28\xb5\x2f\xfd", "application/zstd"), (b"LZIP", "application/x-lzip"),
+                  (b"PK\x03\x04", "application/zip"), (b"%PDF-", "application/pdf"))
+    drawn = ("text/", "application/xml", "application/json", "application/javascript", "application/pdf")
+
+    def from_bytes(head):
+        for sig, t in signatures:
+            if head.startswith(sig):
+                return t
+        text = b"\0" not in head or head.startswith((b"\xfe\xff", b"\xff\xfe"))
+        return "text/plain" if text else "application/octet-stream"
+
+    def label(name, head):
+        for ending, t in endings.items():
+            if name.endswith(ending):
+                return t
+        t, encoding = mimetypes.guess_type("./" + name)
+        seen = from_bytes(head)
+        if encoding:
+            return "application/octet-stream" if seen == "text/plain" else seen
+        if t is None:
+            return seen
+        if t.startswith(drawn) or t.endswith(("+xml", "+json")):
+            agrees = b"%PDF-" in head if t == "application/pdf" else seen == "text/plain"
+            return t if agrees else seen
+        return t
+
+    # One MiB at a time: some text files are large (FILES.byname of CTAN is 27 MB).
+    def utf8(path):
+        d = codecs.getincrementaldecoder("utf-8")()
+        try:
+            with open(path, "rb") as h:
+                for part in iter(lambda: h.read(1 << 20), b""):
+                    d.decode(part)
+            d.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return False
+        return True
+
+    out = sys.stdout.buffer
+    for d, _, files in os.walk(root):
+        for f in files:
+            p = os.path.join(d, f)
+            with open(p, "rb") as h:
+                head = h.read(1024)
+            t = label(f, head)
+            if t.startswith("text/") and utf8(p):
+                t += "; charset=utf-8"
+            out.write(os.fsencode(os.path.relpath(p, root)) + b"\t" + t.encode() + b"\n")
+  # label-trees: with "up", move each file of the labels out of staging into one tree for
+  # each type, and write the type of each tree to N.type. With "staging", move the files
+  # back. The arguments are staging, the up directory, the labels, the direction and the
+  # name of the FRESH_KEY file, which stays in staging.
+  TREES_PY: |-
+    import os, shutil, sys
+
+    staging, up, labels, to, fresh = (os.fsencode(a) for a in sys.argv[1:6])
+
+    def move(a, b):
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+        os.rename(a, b)
+
+    if to == b"up":
+        shutil.rmtree(up, ignore_errors=True)
+        trees = {}
+        with open(labels, "rb") as f:
+            for line in f:
+                path, t = line.rstrip(b"\n").split(b"\t")
+                if path != fresh:
+                    n = trees.setdefault(t, str(len(trees) + 1).encode())
+                    move(os.path.join(staging, path), os.path.join(up, n, path))
+        for t, n in trees.items():
+            with open(os.path.join(up, n + b".type"), "wb") as f:
+                f.write(t)
+    else:
+        for n in os.listdir(up) if os.path.isdir(up) else ():
+            tree = os.path.join(up, n)
+            for d, _, files in os.walk(tree) if os.path.isdir(tree) else ():
+                for f in files:
+                    p = os.path.join(d, f)
+                    move(p, os.path.join(staging, os.path.relpath(p, tree)))
+        shutil.rmtree(up, ignore_errors=True)
+  # remove: the JSON body of one DeleteObjects call, for the keys of a file, one key on each
+  # line. The program escapes each backslash and each double quotation mark of a key.
+  DELETE_JSON: |-
+    BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
+         printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }
+  # index-same: a directory is the same if each of its keys is the same. The program writes
+  # the same directories to Y (index-same.txt), the other directories to M (index-make.new),
+  # and the files of the same directories to its output. The program finds each input with
+  # FILENAME, because an empty file has no first line. Its other vars:
+  #   - E: the ETag of each key in the bucket
+  #   - H: the MD5 of each staged key (page-md5.txt)
+  #   - I: INDEX
+  #   - S and R: STAGING and SLASH, each with a slash at the end.
+  SAME_PAGES: |-
+    FILENAME == E { gsub(/"/, "", $2); e[$1] = $2; next }
+    FILENAME == H { if ($2 == "s") d = $3 "/"; else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I)); else next
+      seen[d] = 1; if (e[$3] != $1) diff[d] = 1; next }
+    !($0 in seen) || ($0 in diff) { print > M; next }
+    { print > Y; print S $0 I; if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }
+  # pages: the entries "dir TAB d|e|f TAB name TAB size TAB mtime" of each directory of the
+  # first input (index-make.txt), from the page state (the second input): the files in the
+  # bucket and the directories of upstream. A line "dir/" of the page state gives an e entry
+  # for that directory. The e entry opens the page and adds no row. Thus, a directory with no
+  # file also gets a page.
+  PAGE_ENTRIES: |-
+    FILENAME == ARGV[1] { want[$0] = 1; next }
+    { n = split($1, c, "/"); d = ""
+      for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
+      if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }
+  # pages: the style of each directory page. Each line ends with a backslash. Thus, YAML
+  # joins the lines with no space, and the style is one line in each page.
+  PAGE_CSS: ":root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;\
+    --hov:#edebe5;--a:#3b45d9}\
+    @media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;\
+    --line:#262630;--hov:#1a1a22;--a:#8b93ff}}\
+    body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);\
+    color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}\
+    h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}\
+    p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}\
+    table{width:100%;border-collapse:collapse;\
+    font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}\
+    th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;\
+    text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;\
+    white-space:nowrap}\
+    td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}\
+    td:first-child{overflow-wrap:anywhere;width:100%}\
+    td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}\
+    th:last-child,td:last-child{text-align:right}tr:hover td{background:var(--hov)}\
+    a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}\
+    .s a{color:var(--mut)}\
+    .k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;\
+    border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}\
+    .k:hover{color:var(--a);border-color:var(--a);text-decoration:none}\
+    footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);\
+    color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}\
+    footer a{color:inherit;text-decoration:underline}\
+    @media (max-width:36rem){thead{display:none}\
+    tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}\
+    td{border:0;padding:.1rem .5rem}td:first-child{grid-column:1/-1;padding-top:.45rem}\
+    td+td{padding-bottom:.45rem;font-size:.8rem}}"
+  # pages: the page of each directory, from its entries, sorted. The program keeps the rows of
+  # a directory in arrays. At shut, it writes the page to its two keys with the same calls.
+  # Thus, the two keys have the same bytes. With the base href, one document is correct for
+  # /dir/ and for /dir. Without it, a relative href in the second resolves against the
+  # parent. The program percent-encodes each name in href and HTML-escapes it in text.
+  #
+  # The program reads PAGE_FOOT, INDEX_FILES, UPSTREAM and CONTACT from ENVIRON, into F, N,
+  # U and C. The footer is PAGE_FOOT, with %s for the encoded path of the directory. When
+  # PAGE_FOOT is empty, the program makes the footer from UPSTREAM and CONTACT. CONTACT
+  # gets its default from HOST (H).
+  #
+  # rank gives the position of each name in INDEX_FILES. real is the index file of the
+  # open directory with the lowest rank. Without a real, shut writes the page key, and with
+  # a real, it writes a line to X (index-real.txt).
+  #
+  # G gives the suffixes of the signature files and the checksum files. The match ignores
+  # uppercase and lowercase. A file whose name is a different file of the directory plus one
+  # or more of these suffixes goes on the row of that file.
+  #
+  # Its other vars: S and R, STAGING and SLASH, each with a slash at the end, I (INDEX) and
+  # css (PAGE_CSS).
+  PAGE_HTML: |-
+    {{.URLENC}}
+    BEGIN { F = ENVIRON["PAGE_FOOT"]; N = ENVIRON["INDEX_FILES"]; U = ENVIRON["UPSTREAM"]; C = ENVIRON["CONTACT"]
+      n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
+      G = "\\.(sig|sign|asc|gpg|dsig|proof|md5|md5sum|sha|sha1|sha224|sha256|sha256sum|sha512|sum|checksums)$"
+      if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1) }
+    function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
+    function grp(n,  s, o) { s = sprintf("%.0f", n); o = ""
+      while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } return s o }
+    function iec(n,  u, i) { if (n < 1024) return sprintf("%.0f B", n)
+      split("KiB MiB GiB TiB", u, " "); n /= 1024; i = 1; while (n >= 1024 && i < 4) { n /= 1024; i++ }
+      return sprintf(n < 10 ? "%.1f %s" : "%.0f %s", n, u[i]) }
+    function ymd(t) { gsub(/\//, "-", t); return substr(t, 1, 16) }
+    function foot(  t) { if (F != "") return "<footer>" sprintf(F, enc(cur)) "</footer>"
+      t = (U == "" ? "" : "Mirror of " esc(U) enc(cur) ".")
+      if (C != "") t = t (t == "" ? "" : " ") "Report a problem to <a href=\"mailto:" esc(C) "\">" esc(C) "</a>."
+      return (t == "" ? "" : "<footer>" t "</footer>") }
+    function open(d) { cur = d; live = 1; real = ""; nd = 0; nfl = 0; tot = 0; split("", has) }
+    function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
+    function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
+      for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
+        while (match(tolower(r), G)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
+        if (x != "") { fold[i] = 1
+          links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
+      c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
+      if (nfl) c = c (c == "" ? "" : ", ") grp(nfl) (nfl == 1 ? " file" : " files") ", " iec(tot)
+      if (c == "") c = "This directory is empty."
+      fa = S cur I; if (real != "") print cur real "\t" cur I > X
+      if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/"); fb = R k "/" b }
+      w("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Index of /" esc(cur) "</title>\n")
+      w("<base href=\"/" enc(cur) "\">\n<style>" css "</style></head><body>\n<h1>Index of /" esc(cur) "</h1><p>" c "</p>\n")
+      w("<table><thead><tr><th>Name</th><th>Modified (UTC)</th><th>Size</th></tr></thead><tbody>\n")
+      if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
+      for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
+      for (i = 1; i <= nfl; i++) if (!(i in fold))
+        w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
+      w("</tbody></table>" foot() "</body></html>\n")
+      if (real == "") close(fa); if (cur != "") close(fb) }
+    !live || $1 != cur { if (live) shut(); open($1) }
+    $2 == "e" { next }
+    $2 == "d" { dname[++nd] = $3; next }
+    ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
+    { fname[++nfl] = $3; fsize[nfl] = $4; ftime[nfl] = $5; has[$3] = 1; tot += $4 }
+    END { if (live) shut() }
 
 tasks:
   pipeline:
@@ -220,30 +502,8 @@ tasks:
     desc: RUN/listing.txt (rsync --list-only) to RUN/upstream.txt, every regular file as "path TAB size TAB mtime", and RUN/upstream-dirs.txt, every directory but the root as "path/"; both byte-sorted
     set: [pipefail]
     cmds:
-      # The size column can contain commas (rsync 3.x), or it can be empty for an empty
-      # file (openrsync). Thus, the program finds the size from the date, which always has
-      # the same width, and not from a field number.
-      #
-      # The program keeps each regular file in the listing of upstream. tlnet keeps each
-      # container with a revision-stamped name, and a symlink with the stable name is
-      # adjacent to it. -L resolves the two, and the mirror sends the two. A mirror that
-      # wants only the stable names makes the listing smaller with FILTER. tlnet does
-      # this.
-      - >-
-        awk '
-          /^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
-            path = substr($0, RSTART + RLENGTH); mtime = substr($0, RSTART + 1, RLENGTH - 2)
-            size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
-            print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
-        | LC_ALL=C sort > {{.RUN}}/upstream.txt
-      # This command writes the directories of upstream, each with a slash at the end. The
-      # root (".") is not in the file. pages makes a page for each directory, also for a
-      # directory with no file.
-      - >-
-        awk '
-          /^d/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
-            path = substr($0, RSTART + RLENGTH); if (path != ".") print path "/" }' {{.RUN}}/listing.txt \
-        | LC_ALL=C sort > {{.RUN}}/upstream-dirs.txt
+      - awk '{{.LIST_FILES}}' {{.RUN}}/listing.txt | LC_ALL=C sort > {{.RUN}}/upstream.txt
+      - awk '{{.LIST_DIRS}}' {{.RUN}}/listing.txt | LC_ALL=C sort > {{.RUN}}/upstream-dirs.txt
       # A truncated listing must not become a list of deletions. LIST_FLOOR is a line
       # count, approximately 90% of the usual size of the listing. A correct listing
       # always has more lines. When LIST_FLOOR is not set, there is no guard.
@@ -314,19 +574,22 @@ tasks:
       # into the delta. Thus, verify examines it with the new sha512 in staging. The
       # pattern is the same as in verify.
       - >-
-        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
+        awk -F'\t' -v TL="{{.TL}}" 'FILENAME == ARGV[1] { if ($1 ~ "^" TL "/(tlpkg/texlive\\.tlpdb|[^/]+)\\.sha512$") want[substr($1, 1, length($1) - 7)]; next }
         $1 in want' {{.RUN}}/changed.txt {{.RUN}}/upstream.txt | LC_ALL=C sort -u -o {{.RUN}}/changed.txt - {{.RUN}}/changed.txt
       - cut -f1 {{.RUN}}/upstream.txt > {{.RUN}}/paths.txt
       - cut -f1 {{.RUN}}/applied.txt | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
 
   split:
     desc: Refuse a tree over CEILING_GB (when set) or a file the disk cannot hold; split changed.txt into RUN/batch-NNNN.txt
+    vars:
+      # A task var, not a global var, because a caller can give BATCH_GB as a call var.
+      BATCH_SIZE: '{{.BATCH_GB | default 4}}'
     cmds:
       # BATCH_GB goes into shell arithmetic below. There, 08 is 0 and 0x1 is 1. Thus, this
       # command stops the run on each value that is not a whole number.
       - >-
-        b={{shellQuote (print (.BATCH_GB | default 4))}};
-        case "$b" in ''|0?*|*[!0-9]*) echo "split: BATCH_GB is a whole number, not $b" >&2; exit 1 ;; esac
+        b={{shellQuote .BATCH_SIZE}};
+        case "$b" in {{.NOT_WHOLE}}) echo "split: BATCH_GB is a whole number, not $b" >&2; exit 1 ;; esac
       # CEILING_GB unset or 0 gives no ceiling. The command always prints the size.
       - >-
         {{if .CEILING_GB}}awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
@@ -338,36 +601,15 @@ tasks:
       # RUN and for the OS.
       - >-
         awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" \
-          '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
+          '$2 / 1024 > kb - {{.HEADROOM_KIB}} { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
         {{.RUN}}/changed.txt
       - rm -f {{.RUN}}/batch-*.txt
-      # The program adds the sizes in the listing. It uses only the listing to divide the
-      # delta, not the files. A file that is larger than BATCH_GB is a batch with no other
-      # file, and the batch that the program fills does not change.
-      #
-      # The decision batch is the last batch. It holds tlpkg/ of TL (the tlpdb) and the
-      # files at the bucket root, which include the FRESH_KEY file. A client reads these
-      # files before it selects the files to download. Because this batch is the last
-      # batch, these files cannot identify a key that is not in the bucket at that time.
-      #
-      # A path that has the previous path as its first part (x, x.sha512, x.sha512.asc)
-      # does not start a new batch. Also, diff puts x in the delta when x.sha512 is in the
-      # delta. Thus, verify always finds the file that its signature identifies.
-      #
       # BATCH_GB goes into the command with no quotes, because it is in $(( )), where a
       # quoted operand is a syntax error. The first command of split stops the run before
       # this line on each value that is not a whole number.
       - >-
-        awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB | default 4}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
-          index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
-          $2 > CAP { f = name(++n); print > f; close(f); next }
-          { if (sz + $2 > CAP && index($1, prev) != 1) flush(); buf[++nb] = $0; sz += $2; prev = $1 }
-          END { flush(); if (nd) { f = name(++n); for (i = 1; i <= nd; i++) print dec[i] > f; close(f) }
-                printf "%d lines in %d batches\n", NR, n }
-          function name(i) { return sprintf("%s/batch-%04d.txt", DIR, i) }
-          function flush(  i, f) { if (!nb) return; f = name(++n)
-            for (i = 1; i <= nb; i++) print buf[i] > f; close(f); nb = sz = 0; split("", buf) }' \
-        {{.RUN}}/changed.txt
+        awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_SIZE}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}"
+        '{{.CUT_BATCHES}}' {{.RUN}}/changed.txt
 
   # ---- the batches ----
   prepare:
@@ -413,7 +655,7 @@ tasks:
     internal: true
     requires: {vars: [B]}
     preconditions:
-      - sh: test "$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" -gt "$(awk -F'\t' '{ s += $2 } END { print int(s / 1024) + 1048576 }' {{.B}})"
+      - sh: test "$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" -gt "$(awk -F'\t' '{ s += $2 } END { print int(s / 1024) + {{.HEADROOM_KIB}} }' {{.B}})"
         msg: "not enough free disk for {{.B}}"
     cmds:
       - find {{.STAGING}} -mindepth 1 -delete
@@ -447,12 +689,7 @@ tasks:
         gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f" | awk -v k={{.TL_KEY}} '{{.GPGCHECK}}')
         || exit 1; done
       # Each TL container in this batch must agree with the checksum that the tlpdb gives
-      # for it. prepare examined that tlpdb. The check uses the two names that upstream
-      # has:
-      #   - the stable name, which the tlpdb gives
-      #   - the revision-stamped name, which the tlpdb gives through the revision.
-      # The two names have the same bytes, and thus the same checksum. The END clause is a
-      # second check: it rejects a container that is not in the tlpdb.
+      # for it (TLPDB_SUMS). prepare examined that tlpdb.
       #
       # The awk program writes to a file, not to a pipe. Thus, the status of the command
       # is the status of awk. verify operates without pipefail, because the grep in the
@@ -470,16 +707,7 @@ tasks:
       # between the two.
       - >-
         cd {{.STAGING}} && { test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
-        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
-          /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
-          /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
-          /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
-          /^srccontainerchecksum /{split($0, a, " "); emit(a[2], n ".source")}
-          function emit(sum, base,   p, q) { p = TL "/archive/" base ".tar.xz"; q = TL "/archive/" base ".r" r ".tar.xz"
-            if (p in want) { print sum "  " p; delete want[p] }
-            if (q in want) { print sum "  " q; delete want[q] } }
-          END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
-        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
+        awk -F'\t' -v TL="{{.TL}}" '{{.TLPDB_SUMS}}' {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
         shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }; }
       # The decision batch. For this batch, these conditions must be correct:
       #   - The tlpdb in the batch is the tlpdb that prepare examined at the start of the
@@ -493,10 +721,7 @@ tasks:
         xz -dc {{.TL}}/tlpkg/texlive.tlpdb.xz | cmp - {{.TL}}/tlpkg/texlive.tlpdb &&
         { cut -f1 {{.RUN}}/applied.txt; cut -f1 {{.B}}; } | LC_ALL=C sort -u
         | LC_ALL=C comm -23 - {{.RUN}}/deleted.txt > {{.RUN}}/tl/after.txt &&
-        awk -v TL="{{.TL}}" '/^name /{n=$2}
-          /^containerchecksum /{print TL "/archive/" n ".tar.xz"}
-          /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
-          /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' {{.TL}}/tlpkg/texlive.tlpdb \
+        awk -v TL="{{.TL}}" '{{.TLPDB_NAMES}}' {{.TL}}/tlpkg/texlive.tlpdb
         | LC_ALL=C sort | LC_ALL=C comm -23 - {{.RUN}}/tl/after.txt > {{.RUN}}/tl/missing.txt &&
         test ! -s {{.RUN}}/tl/missing.txt; }; }
 
@@ -504,6 +729,7 @@ tasks:
     internal: true
     requires: {vars: [B]}
     set: [pipefail]   # tee must not change the exit of an upload that has a failure
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       - {task: label}
       - cat {{.RUN}}/labels.txt >> {{.RUN}}/labeled.txt
@@ -520,95 +746,24 @@ tasks:
       - {task: label-trees, vars: {TO: staging}}
       # The FRESH_KEY file goes to the bucket last, in one more command. It gives the date
       # of the tree, and monitors (for example, mirmon) read it.
-      #
-      # ponytail: this command and label-trees put FRESH_KEY, with no quotes, into an awk
-      # string and a Python string. Ceiling: a key with a quote, a backslash or a
-      # non-ASCII character makes these strings incorrect. Upgrade path: give it to awk
-      # with -v, and to Python as an argument. Then do `task render-update` in lib and in
-      # each rsync mirror.
       - >-
-        {{if .FRESH_KEY}}test ! -f {{.STAGING}}/{{shellQuote .FRESH_KEY}} ||
-        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == "{{.FRESH_KEY}}" { print $2 }' {{.RUN}}/labels.txt)"
-        {{.STAGING}}/{{shellQuote .FRESH_KEY}} {{.S3}}/{{shellQuote .FRESH_KEY}} | tee -a {{.RUN}}/publish.txt{{end}}
+        {{if .FRESH_KEY}}test ! -f {{.STAGING}}/"$FRESH_KEY" ||
+        aws s3 cp {{.AWS_FLAGS}} --content-type "$(awk -F'\t' '$1 == ENVIRON["FRESH_KEY"] { print $2 }' {{.RUN}}/labels.txt)"
+        {{.STAGING}}/"$FRESH_KEY" {{.S3}}/"$FRESH_KEY" | tee -a {{.RUN}}/publish.txt{{end}}
 
   label:
     desc: RUN/labels.txt, "path TAB type" for every file under DIR (STAGING), byte-sorted; the type is decided from the name and the first KiB, never left to the CLI
     vars:
       DIR: '{{if .DIR}}{{.DIR}}{{else}}{{.STAGING}}{{end}}'
     cmds:
-      # The rules, in sequence:
-      #   1. A COMPRESSED ending gives the type directly.
-      #   2. An ending that Python reads as compressed and that COMPRESSED does not have
-      #      (.br) gets the type of a signature, or application/octet-stream. It does not
-      #      get text, because brotli has no signature to find.
-      #   3. If not, the mime.types of the image gives the type. But a type that a browser
-      #      shows (text, XML, JSON, JavaScript, PDF) must agree with the bytes. If the
-      #      bytes are compressed, contain a NUL, or are a PDF without %PDF-, they give
-      #      the type.
-      #   4. A name that has no type in mime.types gets a type from its bytes. This type
-      #      is a known signature, text/plain without a NUL, or application/octet-stream
-      #      with a NUL.
-      #   5. A text/* type gets "; charset=utf-8" when the full file is UTF-8 (ASCII is
-      #      UTF-8). A browser then shows its characters correctly. The bytes of other
-      #      text do not tell their encoding. Thus, other text gets no charset.
-      # A control byte is not a NUL: some .sty files of CTAN contain ^Z, and they stay
-      # text. Without "./", guess_type reads a name with a colon as a URL scheme.
+      # The AWS CLI does not select the Content-Type, for two causes:
+      #   - The CLI keeps the first value of the result of guess_type in Python. Thus, the
+      #     CLI sends foo.diff.gz as a diff.
+      #   - The results of the CLI change with the image.
+      # LABEL_PY gives the rules.
       - |
         python3 -I - {{shellQuote .DIR}} {{shellQuote .COMPRESSED}} > {{.RUN}}/labels.raw <<'PY'
-        import codecs, mimetypes, os, sys
-
-        root, table = sys.argv[1], sys.argv[2]
-        endings = {s: f[0] for f in map(str.split, table.splitlines()) if f for s in f[1:]}
-        signatures = ((b"\x1f\x8b", "application/x-gzip"), (b"BZh", "application/x-bzip2"),
-                      (b"\xfd7zXZ\x00", "application/x-xz"), (b"\x1f\x9d", "application/x-compress"),
-                      (b"\x28\xb5\x2f\xfd", "application/zstd"), (b"LZIP", "application/x-lzip"),
-                      (b"PK\x03\x04", "application/zip"), (b"%PDF-", "application/pdf"))
-        drawn = ("text/", "application/xml", "application/json", "application/javascript", "application/pdf")
-
-        def from_bytes(head):
-            for sig, t in signatures:
-                if head.startswith(sig):
-                    return t
-            text = b"\0" not in head or head.startswith((b"\xfe\xff", b"\xff\xfe"))
-            return "text/plain" if text else "application/octet-stream"
-
-        def label(name, head):
-            for ending, t in endings.items():
-                if name.endswith(ending):
-                    return t
-            t, encoding = mimetypes.guess_type("./" + name)
-            seen = from_bytes(head)
-            if encoding:
-                return "application/octet-stream" if seen == "text/plain" else seen
-            if t is None:
-                return seen
-            if t.startswith(drawn) or t.endswith(("+xml", "+json")):
-                agrees = b"%PDF-" in head if t == "application/pdf" else seen == "text/plain"
-                return t if agrees else seen
-            return t
-
-        # One MiB at a time: some text files are large (FILES.byname of CTAN is 27 MB).
-        def utf8(path):
-            d = codecs.getincrementaldecoder("utf-8")()
-            try:
-                with open(path, "rb") as h:
-                    for part in iter(lambda: h.read(1 << 20), b""):
-                        d.decode(part)
-                d.decode(b"", final=True)
-            except UnicodeDecodeError:
-                return False
-            return True
-
-        out = sys.stdout.buffer
-        for d, _, files in os.walk(root):
-            for f in files:
-                p = os.path.join(d, f)
-                with open(p, "rb") as h:
-                    head = h.read(1024)
-                t = label(f, head)
-                if t.startswith("text/") and utf8(p):
-                    t += "; charset=utf-8"
-                out.write(os.fsencode(os.path.relpath(p, root)) + b"\t" + t.encode() + b"\n")
+        {{.LABEL_PY}}
         PY
       - LC_ALL=C sort {{.RUN}}/labels.raw > {{.RUN}}/labels.txt && rm {{.RUN}}/labels.raw
 
@@ -616,6 +771,7 @@ tasks:
     desc: 'TO=up: rename every file of RUN/labels.txt but the FRESH_KEY file out of STAGING into RUN/up/N/, one tree per type, its type in RUN/up/N.type. TO=staging: rename them back'
     internal: true
     requires: {vars: [TO]}
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       # Renames on one filesystem. Thus, the verb makes no copy of a byte, and staging has
       # all its files again for merge. If a run stops between TO=up and TO=staging, files
@@ -625,35 +781,8 @@ tasks:
       # The FRESH_KEY file stays in staging, and publish sends it last. With no FRESH_KEY,
       # the empty name agrees with no file. Thus, all files move.
       - |
-        python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} <<'PY'
-        import os, shutil, sys
-
-        staging, up, labels, to = (os.fsencode(a) for a in sys.argv[1:5])
-
-        def move(a, b):
-            os.makedirs(os.path.dirname(b), exist_ok=True)
-            os.rename(a, b)
-
-        if to == b"up":
-            shutil.rmtree(up, ignore_errors=True)
-            trees = {}
-            with open(labels, "rb") as f:
-                for line in f:
-                    path, t = line.rstrip(b"\n").split(b"\t")
-                    if path != b"{{.FRESH_KEY}}":
-                        n = trees.setdefault(t, str(len(trees) + 1).encode())
-                        move(os.path.join(staging, path), os.path.join(up, n, path))
-            for t, n in trees.items():
-                with open(os.path.join(up, n + b".type"), "wb") as f:
-                    f.write(t)
-        else:
-            for n in os.listdir(up) if os.path.isdir(up) else ():
-                tree = os.path.join(up, n)
-                for d, _, files in os.walk(tree) if os.path.isdir(tree) else ():
-                    for f in files:
-                        p = os.path.join(d, f)
-                        move(p, os.path.join(staging, os.path.relpath(p, tree)))
-            shutil.rmtree(up, ignore_errors=True)
+        python3 -I - {{.STAGING}} {{.RUN}}/up {{.RUN}}/labels.txt {{.TO}} "$FRESH_KEY" <<'PY'
+        {{.TREES_PY}}
         PY
 
   merge:
@@ -696,9 +825,7 @@ tasks:
       # errors. Thus, the command uses grep to find them.
       - >-
         for f in {{.RUN}}/del-*; do
-        awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
-             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
-        > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
+        awk '{{.DELETE_JSON}}' "$f" > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
         | { test "$(grep -c Errors)" = 0; }; done
 
   delete:
@@ -825,24 +952,22 @@ tasks:
         { (cd {{.STAGING}} && find . -type f -exec md5sum {} +) | sed 's#  \./#\tp\t#';
         for d in {{.SLASH}}/*/; do test -d "$d" || continue; (cd "$d" && find . -type f -exec md5sum {} +) | sed 's#  \./#\ts\t#'; done; }
         > {{.RUN}}/page-md5.txt
-      # A directory is the same if each of its keys is the same. The awk writes the same
-      # directories to index-same.txt, the other directories to index-make.new, and the
-      # files of the same directories to its output. The awk finds each input with
-      # FILENAME, because an empty file has no first line.
+      # SAME_PAGES writes the files of the same directories. xargs removes them.
       - >-
         awk -F'\t' -v E="{{.RUN}}/bucket-etags.txt" -v H="{{.RUN}}/page-md5.txt" -v I="{{.INDEX}}" -v S="{{.STAGING}}/" -v R="{{.SLASH}}/"
-        -v Y="{{.RUN}}/index-same.txt" -v M="{{.RUN}}/index-make.new" '
-          FILENAME == E { gsub(/"/, "", $2); e[$1] = $2; next }
-          FILENAME == H { if ($2 == "s") d = $3 "/"; else if (substr($3, length($3) - length(I) + 1) == I) d = substr($3, 1, length($3) - length(I)); else next
-            seen[d] = 1; if (e[$3] != $1) diff[d] = 1; next }
-          !($0 in seen) || ($0 in diff) { print > M; next }
-          { print > Y; print S $0 I; if ($0 != "") { b = substr($0, 1, length($0) - 1); print R split(b, c, "/") "/" b } }' {{.RUN}}/bucket-etags.txt {{.RUN}}/page-md5.txt {{.RUN}}/index-make.txt \
+        -v Y="{{.RUN}}/index-same.txt" -v M="{{.RUN}}/index-make.new" '{{.SAME_PAGES}}'
+        {{.RUN}}/bucket-etags.txt {{.RUN}}/page-md5.txt {{.RUN}}/index-make.txt
         | tr '\n' '\0' | xargs -0r rm -f
       - touch {{.RUN}}/index-same.txt {{.RUN}}/index-make.new && mv {{.RUN}}/index-make.new {{.RUN}}/index-make.txt
 
   pages:
     desc: RUN/indexed.txt against the page state (RUN/applied.txt and RUN/upstream-dirs.txt) -> a page under both of its keys for every directory a changed line touches, or for every directory when the stamp differs; RUN/index-gone.txt for the keys of directories that upstream removed; RUN/index-real.txt for the directories with an index file; RUN/indexed.new for INDEXED
     set: [pipefail]
+    env:
+      INDEX_FILES: '{{.INDEX_FILES}}'
+      UPSTREAM: '{{.UPSTREAM}}'
+      CONTACT: '{{.CONTACT}}'
+      PAGE_FOOT: '{{.PAGE_FOOT}}'
     vars:
       # The verb writes each page to two keys:
       #   - <dir>/INDEX. For a directory URL, the rewrite of the zone sends this key.
@@ -859,9 +984,10 @@ tasks:
       # PAGE_FOOT is a printf format. It can have one %s, for the encoded directory, and %%
       # for a %. A different directive takes the directory or prints nothing. Thus, this
       # command stops the run on such a PAGE_FOOT. awk reads the value from the
-      # environment, because awk -v changes each backslash escape.
+      # environment, because awk -v changes each backslash escape. PAGE_HTML reads it in
+      # the same way. Thus, the check and the footer read the same bytes.
       - >-
-        PAGE_FOOT={{shellQuote (.PAGE_FOOT | default "")}} awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
+        awk 'BEGIN { g = ENVIRON["PAGE_FOOT"]; gsub(/%%/, "", g)
           if (g !~ /^[^%]*(%s[^%]*)?$/) { print "pages: PAGE_FOOT can have one %s, and %%, not " ENVIRON["PAGE_FOOT"] > "/dev/stderr"; exit 1 } }'
       - 'mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete && : > {{.RUN}}/index-real.txt'
       # The page state is the state and a line "dir/ TAB TAB" for each directory of
@@ -874,8 +1000,7 @@ tasks:
       # a page. INDEXED starts with the stamp of the pages that it records. If INDEXED has
       # no stamp line, the stamps do not agree.
       - >-
-        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} {{shellQuote (.INDEX_FILES | default "")}}
-        {{shellQuote (.PAGE_FOOT | default "")}} {{shellQuote (.UPSTREAM | default "")}} {{shellQuote (.CONTACT | default "")}}
+        printf '%s\n' {{shellQuote .PAGE_FORMAT}} {{shellQuote .INDEX}} "$INDEX_FILES" "$PAGE_FOOT" "$UPSTREAM" "$CONTACT"
         {{shellQuote .HOST}} | sha256sum | awk '{ print "#pages " substr($1, 1, 16) }' > {{.RUN}}/index-stamp.txt
       - awk 'NR == 1 && /^#pages / { next } { print }' {{.RUN}}/indexed.txt > {{.RUN}}/index-old.txt
       # A page changes when a file in its directory, or a directory below it, is added,
@@ -923,109 +1048,19 @@ tasks:
         awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
           for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
         | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
-      # The verb gets the entries, "dir TAB d|e|f TAB name TAB size TAB mtime", from the
-      # page state: the files in the bucket and the directories of upstream. A line "dir/"
-      # of the page state gives an e entry for that directory. The e entry opens the page
-      # and adds no row. Thus, a directory with no file also gets a page. After the sort,
+      # PAGE_ENTRIES gives the entries of each directory of index-make.txt. After the sort,
       # the lines of a directory are together, with its subdirectories first and the names
-      # in version sequence (sort -V: x-2.9 before x-2.10). Thus, the verb writes each page
-      # one time and closes it. The verb percent-encodes each name in href and HTML-escapes
-      # it in text.
-      #
-      # The verb keeps the rows of a directory in arrays. At shut, it writes the page to its
-      # two keys with the same calls. Thus, the two keys have the same bytes. With the base
-      # href, one document is correct for /dir/ and for /dir. Without it, a relative href in
-      # the second resolves against the parent. The footer is PAGE_FOOT, with %s for the
-      # encoded path of the directory. When PAGE_FOOT is empty, the verb makes the footer
-      # from UPSTREAM and CONTACT. CONTACT gets its default from HOST.
-      #
-      # rank gives the position of each name in INDEX_FILES. real is the index file of the
-      # open directory with the lowest rank. Without a real, shut writes the page key.
-      #
-      # G gives the suffixes of the signature files and the checksum files. The match
-      # ignores uppercase and lowercase. A file whose name is a different file of the
-      # directory plus one or more of these suffixes goes on the row of that file.
+      # in version sequence (sort -V: x-2.9 before x-2.10). Thus, PAGE_HTML writes each page
+      # one time and closes it.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
-        awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
-          { n = split($1, c, "/"); d = ""
-            for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
-            if (d in want) print d, (c[n] == "" ? "e" : "f"), c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/page-state.txt \
-        | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" -v F={{shellQuote (.PAGE_FOOT | default "")}} \
-          -v N={{shellQuote (.INDEX_FILES | default "")}} -v X="{{.RUN}}/index-real.txt" -v U={{shellQuote (.UPSTREAM | default "")}} \
-          -v C={{shellQuote (.CONTACT | default "")}} -v H="{{.HOST}}" '{{.URLENC}}
-          BEGIN { n = split(N, nm, " "); for (i = n; i >= 1; i--) rank[nm[i]] = i
-            G = "\\.(sig|sign|asc|gpg|dsig|proof|md5|md5sum|sha|sha1|sha224|sha256|sha256sum|sha512|sum|checksums)$"
-            if (C == "" && (j = index(H, ".")) > 1) C = substr(H, 1, j - 1) "@" substr(H, j + 1)
-            css = ":root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1c1c28;--mut:#6e6e7e;--line:#e2e0da;--hov:#edebe5;--a:#3b45d9}"
-            css = css "@media (prefers-color-scheme:dark){:root{--bg:#121218;--fg:#f0f0f5;--mut:#8b8b9c;--line:#262630;--hov:#1a1a22;--a:#8b93ff}}"
-            css = css "body{margin:0 auto;max-width:60rem;padding:2rem 1rem 3rem;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,sans-serif}"
-            css = css "h1{font-size:1.35rem;font-weight:650;margin:0;overflow-wrap:anywhere}p{color:var(--mut);margin:.2rem 0 1.25rem;font-size:.9rem}"
-            css = css "table{width:100%;border-collapse:collapse;font:13.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
-            css = css "th{font:600 .7rem/1 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:0 .5rem .6rem;white-space:nowrap}"
-            css = css "td{padding:.4rem .5rem;border-top:1px solid var(--line);vertical-align:baseline}td:first-child{overflow-wrap:anywhere;width:100%}"
-            css = css "td+td{white-space:nowrap;color:var(--mut);font-variant-numeric:tabular-nums}th:last-child,td:last-child{text-align:right}"
-            css = css "tr:hover td{background:var(--hov)}a{color:var(--a);text-decoration:none}a:hover{text-decoration:underline}.s a{color:var(--mut)}"
-            css = css ".k{font-size:.72rem;margin-left:.6rem;padding:.05rem .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}"
-            css = css ".k:hover{color:var(--a);border-color:var(--a);text-decoration:none}"
-            css = css "footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem;overflow-wrap:anywhere}"
-            css = css "footer a{color:inherit;text-decoration:underline}@media (max-width:36rem){thead{display:none}"
-            css = css "tr{display:grid;grid-template-columns:1fr auto;border-top:1px solid var(--line)}td{border:0;padding:.1rem .5rem}"
-            css = css "td:first-child{grid-column:1/-1;padding-top:.45rem}td+td{padding-bottom:.45rem;font-size:.8rem}}" }
-          function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
-          function grp(n,  s, o) { s = sprintf("%.0f", n); o = ""
-            while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } return s o }
-          function iec(n,  u, i) { if (n < 1024) return sprintf("%.0f B", n)
-            split("KiB MiB GiB TiB", u, " "); n /= 1024; i = 1; while (n >= 1024 && i < 4) { n /= 1024; i++ }
-            return sprintf(n < 10 ? "%.1f %s" : "%.0f %s", n, u[i]) }
-          function ymd(t) { gsub(/\//, "-", t); return substr(t, 1, 16) }
-          function foot(  t) { if (F != "") return "<footer>" sprintf(F, enc(cur)) "</footer>"
-            t = (U == "" ? "" : "Mirror of " esc(U) enc(cur) ".")
-            if (C != "") t = t (t == "" ? "" : " ") "Report a problem to <a href=\"mailto:" esc(C) "\">" esc(C) "</a>."
-            return (t == "" ? "" : "<footer>" t "</footer>") }
-          function open(d) { cur = d; live = 1; real = ""; nd = 0; nfl = 0; tot = 0; split("", has) }
-          function w(s) { if (real == "") printf("%s", s) > fa; if (cur != "") printf("%s", s) > fb }
-          function shut(  i, r, x, c, e, k, b) { split("", fold); split("", links)
-            for (i = 1; i <= nfl; i++) { r = fname[i]; x = ""
-              while (match(tolower(r), G)) { r = substr(r, 1, RSTART - 1); if (r in has) x = r }
-              if (x != "") { fold[i] = 1
-                links[x] = links[x] "<a class=\"k\" href=\"" enc(fname[i]) "\" aria-label=\"" esc(fname[i]) "\">" esc(substr(fname[i], length(x) + 1)) "</a>" } }
-            c = (nd ? grp(nd) (nd == 1 ? " directory" : " directories") : "")
-            if (nfl) c = c (c == "" ? "" : ", ") grp(nfl) (nfl == 1 ? " file" : " files") ", " iec(tot)
-            if (c == "") c = "This directory is empty."
-            fa = S cur I; if (real != "") print cur real "\t" cur I > X
-            if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/"); fb = R k "/" b }
-            w("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Index of /" esc(cur) "</title>\n")
-            w("<base href=\"/" enc(cur) "\">\n<style>" css "</style></head><body>\n<h1>Index of /" esc(cur) "</h1><p>" c "</p>\n")
-            w("<table><thead><tr><th>Name</th><th>Modified (UTC)</th><th>Size</th></tr></thead><tbody>\n")
-            if (cur != "") w("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n")
-            for (i = 1; i <= nd; i++) w("<tr><td><a href=\"" enc(dname[i]) "/\">" esc(dname[i]) "/</a></td><td></td><td></td></tr>\n")
-            for (i = 1; i <= nfl; i++) if (!(i in fold))
-              w("<tr" (tolower(fname[i]) ~ G ? " class=\"s\"" : "") "><td><a href=\"" enc(fname[i]) "\">" esc(fname[i]) "</a>" links[fname[i]] "</td><td>" ymd(ftime[i]) "</td><td title=\"" grp(fsize[i]) " bytes\">" iec(fsize[i]) "</td></tr>\n")
-            w("</tbody></table>" foot() "</body></html>\n")
-            if (real == "") close(fa); if (cur != "") close(fb) }
-          !live || $1 != cur { if (live) shut(); open($1) }
-          $2 == "e" { next }
-          $2 == "d" { dname[++nd] = $3; next }
-          ($3 in rank) && (real == "" || rank[$3] < rank[real]) { real = $3 }
-          { fname[++nfl] = $3; fsize[nfl] = $4; ftime[nfl] = $5; has[$3] = 1; tot += $4 }
-          END { if (live) shut() }'
+        awk -F'\t' -v OFS='\t' '{{.PAGE_ENTRIES}}' {{.RUN}}/index-make.txt {{.RUN}}/page-state.txt
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3V | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}"
+        -v X="{{.RUN}}/index-real.txt" -v H="{{.HOST}}" -v css={{shellQuote .PAGE_CSS}} '{{.PAGE_HTML}}'
 
   smoke:
     desc: Read a key of every type this run published back through the domain, size against the listing and type against the label; with TL set the tlpdb sha512 against the verified copy; with INDEX set one redrawn page under both keys; with CANARY set the canary, as a Perl client, against the bucket's copy; no Content-Encoding on a .tar.gz; warn of paths that never land; fresh; then the mirror's own checks, smoke-mirror
-    vars:
-      # The sample in the first command of smoke reads the FRESH_KEY file only when the
-      # state shows that the file is in the bucket. The file is in the decision batch,
-      # which is the last batch. A first fill that stops at MAX_BATCHES does not do that
-      # batch. The bucket then gives 404 for the key, because no run put it in the bucket.
-      # The run that puts the file in the bucket, and each run after it, include the file
-      # in the sample.
-      #
-      # An {{if}} on a string goes to {{else}} only when the string is empty. Thus, the
-      # path is the flag and also the key.
-      TS:
-        sh: |-
-          {{if .FRESH_KEY}}awk -F'\t' -v k={{shellQuote .FRESH_KEY}} '$1 == k { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true{{end}}
+    env: {FRESH_KEY: '{{.FRESH_KEY}}', CANARY: '{{.CANARY}}'}
     cmds:
       # The sample is the first key of each type that label gave in this run. The command
       # reads each key again with its encoded URL, and finds its line in the listing with
@@ -1033,15 +1068,21 @@ tasks:
       # Content-Type with the label. This finds the CLI, R2 or the zone when one of them
       # sends a type that is different from the selected type.
       #
-      # The FRESH_KEY file is in the sample for its size only. A key in the sample can
-      # contain a space. All other keys can also contain a space.
+      # The FRESH_KEY file is in the sample for its size only. The sample reads it only when
+      # the state shows that the file is in the bucket. The file is in the decision batch,
+      # which is the last batch. A first fill that stops at MAX_BATCHES does not do that
+      # batch. The bucket then gives 404 for the key, because no run put it in the bucket.
+      # The run that puts the file in the bucket, and each run after it, include the file
+      # in the sample.
+      #
+      # A key in the sample can contain a space. All other keys can also contain a space.
       - >-
-        { {{if .TS}}printf '%s\t\n' {{shellQuote .TS}};{{end}}
+        { {{if .FRESH_KEY}}awk -F'\t' '$1 == ENVIRON["FRESH_KEY"] { print $1 "\t" }' {{.RUN}}/applied.txt 2>/dev/null || true;{{end}}
         awk -F'\t' '!seen[$2]++' {{.RUN}}/labeled.txt 2>/dev/null; }
         | while IFS="$(printf '\t')" read -r k t; do
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
         want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
-        h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u");
+        h=$({{.HEADERS}} "{{.URL}}/$u");
         got=$(printf '%s\n' "$h" | {{.SIZE}});
         ct=$(printf '%s\n' "$h" | {{.CTYPE}});
         echo "$k: $got bytes (listing: $want), served as ${ct:-no type} (label: ${t:-none})"; test "$got" = "$want" || exit 1;
@@ -1069,7 +1110,7 @@ tasks:
       # together.
       - >-
         {{if .INDEX}}test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
-        r() { h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$(printf '%s\n' "$1" | {{.ENCODE}} | cut -f2)");
+        r() { h=$({{.HEADERS}} "{{.URL}}/$(printf '%s\n' "$1" | {{.ENCODE}} | cut -f2)");
         echo "$(printf '%s\n' "$h" | {{.SIZE}}) bytes, type $(printf '%s\n' "$h" | {{.CTYPE}})"; };
         s=$(awk -F'\t' -v k="${d}{{.INDEX}}" '$2 == k { print $1 }' {{.RUN}}/index-real.txt);
         if test -n "$s"; then want=$(r "$s");
@@ -1094,7 +1135,7 @@ tasks:
       # The command does not do this check with file://, which has no bucket to read. It
       # also does not do it before the state holds the path.
       - >-
-        {{if .CANARY}}h={{shellQuote .CANARY}}; n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
+        {{if .CANARY}}h="$CANARY"; n=$(awk -F'\t' '$1 == ENVIRON["CANARY"] { print $2 }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) n= ;; esac;
         if test -z "$n"; then echo "canary skipped ($h is not in the state, or the URL is not http)"; else
         aws s3 cp {{.AWS_FLAGS}} "{{.S3}}/$h" {{.RUN}}/canary.html &&
@@ -1114,7 +1155,7 @@ tasks:
         g=$(awk -F'\t' '$1 ~ /\.tar\.gz$/ && $2 > 0 { print $1; exit }' {{.RUN}}/applied.txt 2>/dev/null);
         case "{{.URL}}" in http*) ;; *) g= ;; esac;
         if test -z "$g"; then echo "content-encoding check skipped (no non-empty .tar.gz in the state, or the URL is not http)"; else
-        u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u") &&
+        u=$(printf '%s\n' "$g" | {{.ENCODE}} | cut -f2) && h=$({{.HEADERS}} "{{.URL}}/$u") &&
         if printf '%s' "$h" | grep -qi '^content-encoding:'; then echo "$g: served with a content-encoding" >&2; exit 1; fi &&
         echo "$g: served with no content-encoding"; fi
       # A path in the listing of upstream that rsync cannot send (exit 23, which retry
@@ -1134,15 +1175,16 @@ tasks:
 
   fresh:
     desc: With FRESH_KEY set and in the state, read it through the domain and fail the run when the upstream clock in it is FRESH_HOURS (24) old; a source that stalls otherwise leaves every run green
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       # The run moved each byte that it got. Thus, only the clock that upstream wrote can
       # show that the bytes are expired. Upstream can stop. A secondary mirror can stop its
       # sync while its rsync daemon continues to operate.
       - >-
-        {{if .FRESH_KEY}}k={{shellQuote .FRESH_KEY}};
-        if ! awk -F'\t' -v k="$k" '$1 == k { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
+        {{if .FRESH_KEY}}k="$FRESH_KEY";
+        if ! awk -F'\t' '$1 == ENVIRON["FRESH_KEY"] { f = 1 } END { exit !f }' {{.RUN}}/applied.txt 2>/dev/null;
         then echo "freshness skipped ($k is not in the state)"; else
-        h={{shellQuote .FRESH_H}}; case "$h" in ''|0?*|*[!0-9]*) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
+        h={{shellQuote .FRESH_H}}; case "$h" in {{.NOT_WHOLE}}) echo "fresh: FRESH_HOURS is a whole number, not $h" >&2; exit 1 ;; esac;
         u=$(printf '%s\n' "$k" | {{.ENCODE}} | cut -f2);
         t=$({{.CURL}} "{{.URL}}/$u" | {{.STAMP}});
         case "$t" in *-*) t=$(date -u -d "$t" +%s) ;; esac; test -n "$t";
@@ -1157,24 +1199,26 @@ tasks:
   report-engine:
     desc: The engine's rows of the run summary, appended after the toolbox's
     silent: true
+    env: {FRESH_KEY: '{{.FRESH_KEY}}'}
     cmds:
       - |
         n() { test -f "$1" && wc -l < "$1" || echo 0; }
         gb() { test -f "$1" && awk -F'\t' '{ s += $2 } END { printf "%.2f", s / 1e9 }' "$1" || echo 0.00; }
-        cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+        out="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        cat >> "$out" <<EOF
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(gb {{.RUN}}/upstream.txt) GB upstream, at [{{.URL}}/]({{.URL}}/) |
         | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.BATCHES_MAX}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next run" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(awk '/^upload:/ { n++ } END { print n + 0 }' {{.RUN}}/publish.txt 2>/dev/null || echo 0) uploaded, $(cut -f2 {{.RUN}}/labeled.txt 2>/dev/null | sort -u | wc -l | tr -d ' ') types |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && echo "$(gb {{.RUN}}/bucket.txt) GB in $(n {{.RUN}}/bucket.txt) objects (reconciled)" || echo "not measured this run"){{if .CEILING_GB}} of the {{.CEILING_GB}} GB ceiling{{end}} |
         EOF
-      # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
-      - test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(test -f {{.RUN}}/tl/missing.txt && wc -l < {{.RUN}}/tl/missing.txt || echo 0) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # With INDEX set, the pages that index made and the keys that it removed.
-      - test -z "{{.INDEX}}" || echo "| Directory pages | $(test -f {{.RUN}}/index-make.txt && wc -l < {{.RUN}}/index-make.txt || echo 0) redrawn and sent, $(test -f {{.RUN}}/index-same.txt && wc -l < {{.RUN}}/index-same.txt || echo 0) redrawn and not sent (the bucket had the same bytes), $(test -f {{.RUN}}/index-real.txt && wc -l < {{.RUN}}/index-real.txt || echo 0) with a copy of an index file as the page key, $(test -f {{.RUN}}/index-gone.txt && wc -l < {{.RUN}}/index-gone.txt || echo 0) keys removed |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      # Rows that show only when they have data.
-      - test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-      - test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in {{.FRESH_KEY}}, limit {{.FRESH_H}} h |" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        # prepare made RUN/tl. Thus, the delta had a path in the signed subtree.
+        test ! -d {{.RUN}}/tl || echo "| Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlpdb signed by {{.TL_KEY}}; $(n {{.RUN}}/tl/missing.txt) named containers missing from the bucket" || echo "the tlpdb did not verify") |" >> "$out"
+        # With INDEX set, the pages that index made and the keys that it removed.
+        test -z "{{.INDEX}}" || echo "| Directory pages | $(n {{.RUN}}/index-make.txt) redrawn and sent, $(n {{.RUN}}/index-same.txt) redrawn and not sent (the bucket had the same bytes), $(n {{.RUN}}/index-real.txt) with a copy of an index file as the page key, $(n {{.RUN}}/index-gone.txt) keys removed |" >> "$out"
+        # Rows that show only when they have data.
+        test ! -s {{.RUN}}/unlanded.txt || echo "| Never landed | $(wc -l < {{.RUN}}/unlanded.txt | tr -d ' ') listed upstream that rsync could not send, fetched again every run; the first are warnings on the run |" >> "$out"
+        test ! -f {{.RUN}}/fresh.txt || echo "| Upstream clock | $(awk '{ printf "%d h %d min", $1 / 3600, $1 % 3600 / 60 }' {{.RUN}}/fresh.txt) old in $FRESH_KEY, limit {{.FRESH_H}} h |" >> "$out"
 
   retry:
     desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; 23 (a path it could not read, a dangling symlink under -L) and 24 (file vanished mid-transfer) are successes

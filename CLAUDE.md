@@ -19,11 +19,25 @@ Read that section before you write.
 
 - Do not read a call var in a global var. Task renders a global var that reads a different
   var one time. It uses the values of the root and of the command line, and not a call
-  var. Thus, `GPGCHECK` gets the fingerprint as an awk `-v` in each command that uses it. In
-  that command, the call var `TL_KEY` is available.
+  var. Thus, each program in the `programs` part of `vars:` in `engines/rsync.yml` gets its
+  inputs from awk `-v`, `ENVIRON` or an argument, in the command that uses it. For example,
+  each command that uses `GPGCHECK` gives it the fingerprint as an awk `-v`. In that
+  command, the call var `TL_KEY` is available.
 - Some vars have a different name and read a var that a mirror can set, for example
   `BATCHES_MAX` from `MAX_BATCHES`. Such a var also gets the value on the command line
-  (verified). Thus, write each default one time, inline.
+  (verified). A task var with a different name, for example `BATCH_SIZE` in `split`, also
+  gets a call var (verified: `split-refuses` gives `BATCH_GB` as a call var). A global var
+  does not get a call var. Thus, write each default one time, inline or in a task var.
+- A task `env:` gets the call vars, and the command gets each value with no change
+  (verified, 3.53.1). Thus, the text values of a mirror go to the commands in `env:`, and
+  a quotation mark or a `$` in a value does not change a command. The render shows
+  `"$FRESH_KEY"`, not the value. In awk, read such a value with `ENVIRON`. `awk -v`
+  changes each backslash escape in a value (`\n` becomes a newline), and `ENVIRON` does
+  not. `offline` gives `fresh` a `FRESH_KEY` with a `\n` in its name.
+- A var of the environment wins over a task `env:` with the same name, also an empty var
+  (verified, 3.53.1). Then `{{.FRESH_KEY}}` and `"$FRESH_KEY"` can give two different
+  values in one command. The container gets only the names in `PASS_ENV`, and none of
+  them is a var of the engine. Do not add a var of the engine to `PASS` or to `op.env`.
 - Do not put `dir:` on an engine verb. Task can read a flattened Taskfile of `includes:`
   from a path. In that condition, it adds each `dir:`, also an absolute one, to the
   directory of that Taskfile (verified, 3.53.1). Thus, `verify` starts each command with
@@ -75,9 +89,9 @@ Read that section before you write.
   no key without a slash. Thus, if the only changed directory of a run is the root, that
   awk sends no line to `xargs`.
 - A `>-` folded block keeps a newline if a line that continues the line before it starts
-  with more spaces than the lines around it. The awk programs of `pages` use this. Put a
-  backslash at the end of a shell line that must continue. `task check` shows how the block
-  renders.
+  with more spaces than the lines around it. The two-line awk programs in the commands of
+  `split` and `pages` use this. Put a backslash at the end of a shell line that must
+  continue. `task check` shows how the block renders.
 - On a macOS disk, two directory names that are different only in uppercase and lowercase
   letters are one directory. Thus, the pages that a laptop writes from a listing of
   upstream are not complete if upstream has two such directories. For example, CTAN has
@@ -113,12 +127,13 @@ Read that section before you write.
   encoded first is encoded two times (`a%20b` goes out as `a%2520b`), and the copy then
   reads a different key (verified with `aws --debug`, aws-cli 2.36.24).
 - Increase `PAGE_FORMAT` in `engines/rsync.yml` at each change to the HTML or the style of
-  a directory page. If you do not, each mirror keeps the pages of the directories that do
-  not change, and they show the old format. The stamp in `.state/indexed.txt.xz` includes
-  `PAGE_FORMAT`. A new value makes each mirror write all of its pages again, one time.
-- The page awk of `pages` writes each page directly to its two files. Do not make the page
-  with a string that gets a row at a time. That method copies the full string for each
-  row. The `archive/` directory of TeX Live has approximately 34k rows.
+  a directory page (`PAGE_HTML` and `PAGE_CSS`). If you do not, each mirror keeps the pages
+  of the directories that do not change, and they show the old format. The stamp in
+  `.state/indexed.txt.xz` includes `PAGE_FORMAT`. A new value makes each mirror write all
+  of its pages again, one time.
+- `PAGE_HTML`, the page awk of `pages`, writes each page directly to its two files. Do not
+  make the page with a string that gets a row at a time. That method copies the full string
+  for each row. The `archive/` directory of TeX Live has approximately 34k rows.
 - In a check that reads the output of a task with `grep`, find text that only the output
   has. go-task shows each command before it runs it, and that line also has the text of
   each `echo` in the command. For example, `offline` finds `not 08` in the output of
