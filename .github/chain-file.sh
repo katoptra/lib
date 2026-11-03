@@ -16,7 +16,7 @@ chain_file() {
 }
 
 if [ "${1-}" = --check ]; then
-  [ "$(chain_file 'katoptra/dropbox/.github/workflows/sync.yml@refs/heads/main')" = sync.yml ]
+  [ "$(chain_file 'katoptra/ctan/.github/workflows/sync.yml@refs/heads/main')" = sync.yml ]
   [ "$(chain_file 'katoptra/ctan/.github/workflows/hourly.yml@refs/heads/josh/topic')" = hourly.yml ]
   [ "$(chain_file 'o/r/.github/workflows/sync.yml@81fb6ee34abc7703087cfe4a303263febc912c6f')" = sync.yml ]
   echo "chain-file: PASS"

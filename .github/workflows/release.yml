@@ -1,5 +1,5 @@
 # On a semver tag, this workflow does these steps:
-#   1. It makes each image for amd64 and arm64.
+#   1. It makes the image for amd64 and arm64.
 #   2. It pushes the two tags.
 #   3. It moves the floating v<major> tag.
 #   4. It publishes the GitHub release.
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        variant: [rsync, proton]
+        variant: [rsync]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
