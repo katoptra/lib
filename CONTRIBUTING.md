@@ -7,7 +7,7 @@ are applicable to this repository. This repository adds three rules:
   sets.** If a `vars:` block has a default, the run uses that default, not the root value
   of the mirror. Put each default inline in the command: `{{.X | default N}}`. If two
   commands of a verb read the var, put the default in a task var with a different name
-  (`BATCH_SIZE: '{{.BATCH_GB | default 4}}'` in `split`). `IMAGE` is different: each
+  (`BATCH_SIZE: '{{.BATCH_GB | default 4}}'` in `split`). `IMAGE` is different: the
   engine sets `IMAGE: '{{.IMAGE | default "..."}}'` in `vars:`. Thus, if the toolbox entry
   of `includes:` gives `IMAGE`, the run uses that value.
 - **Do not change the name of a verb in `toolbox.yml` or in an engine.** A mirror includes
@@ -15,30 +15,27 @@ are applicable to this repository. This repository adds three rules:
   one namespace.
   A new name for one of these verbs is a new major version.
 - **A change to a verb that a pipeline runs is a change to a `render.txt`.** `render` makes
-  a dry run of the `pipeline` of each example. A change to a verb changes these files:
-  - A toolbox verb: the `render.txt` of each example that runs it
-  - A verb of the rsync engine: `examples/rsync/render.txt`
-  - A verb of the proton engine: `examples/proton/render.txt`.
+  a dry run of the `pipeline` of the example. A change to a toolbox verb or to a verb of
+  the rsync engine changes `examples/rsync/render.txt`.
 
-  A host verb, for example `run` or `session-seal`, is not in a render. Run
-  `task render-update` in each example. Commit the result with the change. The diff of the
-  pull request is the review. A verb with `silent: true` renders no command. Thus, for
+  A host verb, for example `run` or `image-build`, is not in a render. Run
+  `task render-update` in `examples/rsync`. Commit the result with the change. The diff of
+  the pull request is the review. A verb with `silent: true` renders no command. Thus, for
   `report` and `report-engine`, the review of their rows is in the diff of the file that
   has the verb.
 
 ## Checking a change
 
 ```sh
-cd examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
-cd examples/proton && task image-build && task run -- task tools && task check && task run -- task offline
+cd examples/rsync && task image-build && task run -- task tools && task check && task run -- task offline
 sh .github/validate-vars.sh --check && sh .github/chain-file.sh --check && sh docker/gpg-gate-check.sh
 ```
 
-CI does these steps for each image, on each pull request and on each push to `main`:
+CI does these steps for the image, on each pull request and on each push to `main`:
 
 1. It builds the image.
 2. It runs `task run -- task tools`.
 3. It runs `task check`.
 4. It runs `task run -- task offline`.
 
-It also runs the three guards one time, in the job of the `rsync` image.
+It also runs the three guards before it builds the image.

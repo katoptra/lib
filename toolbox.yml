@@ -12,16 +12,13 @@
 #   - No `vars:` default for a value that a mirror sets. With a default here, task does
 #     not use the value of the mirror. Each default is inline.
 #   - The verbs on the host and the verbs in the container use one namespace. Thus, the
-#     names of the verbs in this file are not available for other verbs. The names that an
-#     engine include adds are also not available:
-#       - The rsync engine: pipeline, plan-pipeline, list, normalise, state, pull, push,
-#         rebuild, diff and split. Also batches, batch, fetch, publish, label,
-#         label-trees, merge, checkpoint, remove, delete, reconcile, retry, pages, smoke
-#         and fresh. Its hooks are prepare, verify, index, smoke-mirror and report-engine.
-#       - The proton engine: pipeline, plan-pipeline, session, session-push, seal,
-#         session-seal, age, pull, push, pd, destination, upload, confirm, list-folder,
-#         trash, empty-trash and empty-trash-pipeline. Its hooks are stage, prune and
-#         report-engine.
+#     names of the verbs in this file are not available for other verbs. The names that
+#     the rsync engine adds are also not available:
+#       - pipeline, plan-pipeline, list, normalise, state, pull, push, rebuild, diff and
+#         split
+#       - batches, batch, fetch, publish, label, label-trees, merge, checkpoint, remove,
+#         delete, reconcile, retry, pages, smoke and fresh
+#       - the hooks prepare, verify, index, smoke-mirror and report-engine.
 version: '3'
 
 vars:

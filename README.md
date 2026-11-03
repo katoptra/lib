@@ -22,9 +22,8 @@ does these tasks:
 - It starts each run in a container.
 - It gets the secrets of the run.
 - It does a check of the pipeline, and it gives a report of each run.
-- It moves the bytes. Each transport has one engine here:
-  - `engines/rsync.yml` copies an rsync upstream into a bucket.
-  - `engines/proton.yml` copies a staging tree into Proton Drive.
+- It moves the bytes. The engine, `engines/rsync.yml`, copies an rsync upstream into a
+  bucket.
 
 A mirror contains only its identity, the hooks that it fills, and the verbs that no other
 mirror uses.
@@ -38,34 +37,23 @@ that, you can read each section without the other sections.
 
 ```mermaid
 flowchart LR
-  subgraph up["Upstreams"]
-    u1["Trees over rsync, for example CTAN and GNU"]
-    u2["GitHub, over the API and git"]
-    u3["Dropbox, over the API"]
-  end
+  up["The upstream: a tree over rsync<br/>for example CTAN or GNU"]
   sched["katoptra/dispatch<br/>workflow_dispatch, on a schedule"] --> host
   subgraph job["One GitHub Actions job per run"]
     host["The runner: task sync"] --> box["The toolbox image: task pipeline"]
   end
   vault["A 1Password vault<br/>one item per mirror"] -. "op run: values, by name" .-> host
-  u1 --> box
-  u2 --> box
-  u3 --> box
-  box --> r2["An S3-compatible bucket, R2<br/>a public mirror: the mirror itself<br/>a Proton mirror: the session, and state"]
-  box --> pd["Proton Drive<br/>the private mirrors' sink"]
+  up --> box
+  box --> r2["An S3-compatible bucket, R2<br/>the mirror itself"]
   r2 --> cf["A custom domain on the bucket"] --> cl["tlmgr, browsers, anyone"]
   box --> hc["healthchecks.io, one ping per run"] --> site["katoptra.org, live status"]
 ```
 
-Each mirror has the structure of this diagram, with one upstream and one sink. There are two
-types of mirror:
+Each mirror has the structure of this diagram, with one upstream and one bucket. A mirror
+copies an rsync tree into a bucket, and a domain serves the bucket. The bucket is the
+mirror.
 
-- A public mirror copies an rsync tree into a bucket, and a domain serves the bucket. The
-  bucket is the mirror.
-- A private mirror copies an account into Proton Drive. Its bucket contains only the data
-  that the next run uses.
-
-The two types of mirror do a run with the same steps:
+Each run has these steps:
 
 1. The scheduler starts a job on GitHub Actions.
 2. The job downloads one image.
@@ -86,8 +74,8 @@ flowchart TB
   end
   subgraph lib["katoptra/lib, at v2"]
     tb["toolbox.yml<br/>menu, image, run, op, sync, plan, check<br/>clock, due, reconciled, report, ping, failed"]
-    en["engines/rsync.yml, engines/proton.yml<br/>the pipeline vocabulary, one file per transport"]
-    im["ghcr.io/katoptra/toolbox:rsync-v2, :proton-v2<br/>docker/, toolchain.lock.toml"]
+    en["engines/rsync.yml<br/>the pipeline vocabulary"]
+    im["ghcr.io/katoptra/toolbox:rsync-v2<br/>docker/, toolchain.lock.toml"]
     wf[".github/workflows/sync.yml, check.yml<br/>.github/actions/toolbox"]
   end
   tf -- "includes, flattened" --> tb
@@ -158,7 +146,7 @@ The diagram does not show these four items:
 
 ## The toolbox
 
-`toolbox.yml` contains the verbs that all mirrors have, with all engines. Half of these
+`toolbox.yml` contains the verbs that all mirrors have, outside the engine. Half of these
 verbs run on the host and start the container. The other half run in the container: they
 are the first steps and the last steps of each pipeline.
 
@@ -237,7 +225,7 @@ a failure.
 
 #### When a reconcile runs
 
-A reconcile compares the mirror with its destination, not with its state. The time of the
+A reconcile compares the bucket with upstream, not with the state. The time of the
 last reconcile gives the time of the next one. The start time of a run does not give it,
 because the scheduler is not in the mirror, and its times can change. A pipeline that does a
 reconcile runs `due` near its start. Its reconcile step runs only if `.run/reconcile` is
@@ -249,8 +237,8 @@ there.
 | `RECONCILE_HOURS` | 24 | The number of full hours between two reconciles. For a different interval, a mirror sets it in its root vars |
 
 `.state/reconciled` contains the start epoch of the run that completed the last reconcile.
-The `pull` and `push` of the engine read and write this file. Thus, with the rsync
-engine, the file has xz compression, the same as the state.
+The `pull` and `push` of the engine read and write this file. Thus, the file has xz
+compression, the same as the state.
 
 The limit is half an hour less than `RECONCILE_HOURS`. A daily run starts some seconds
 before or after the time that is 24 h after the last run. With a limit of 24 h and no
@@ -260,7 +248,7 @@ In these conditions, a run records no reconcile, and the reconcile is also neces
 next run:
 
 - The run stops with a failure before it completes its reconcile.
-- An rsync run has batches that wait for a subsequent run. Its reconcile waits for the
+- A run has batches that wait for a subsequent run. Its reconcile waits for the
   run of the chain that uploads the last batch.
 
 ### The parts that a mirror supplies
@@ -280,11 +268,11 @@ next run:
 | `pull`, `push` | Tasks | The tasks that `due` and `reconciled` use to read and write `.state/reconciled`. An engine supplies the two tasks |
 | `excludes:` | Key in `includes:` | The verbs of lib that the mirror overrides. Refer to [Changing it](#changing-it) |
 
-## The engines
+## The engine
 
-An engine is a second entry in `includes:`, with the verbs for one transport. The names of
-these verbs are the same in all engines, and a mirror cannot use these names for a
-different verb. Thus, the pipeline of a mirror has the same verbs with each engine.
+An engine is a second entry in `includes:`, with the verbs for one transport. lib has one
+engine, the rsync engine. A mirror cannot use the name of an engine verb for a different
+verb.
 
 An engine reads the root vars of the mirror and the environment. It has no `vars:` default
 for a var that a mirror sets. With such a default, the run uses the default, not the value
@@ -724,131 +712,13 @@ These procedures repair other problems:
   This procedure is safe, and it has no cost. If you do not do it, R2 aborts the upload
   after 7 days.
 
-### The proton engine
-
-`engines/proton.yml` copies a staging tree into one Proton Drive folder, with the
-`proton-drive` CLI of Proton. It is for a mirror that can copy its full upstream in one run.
-The mirror fills `staging/`, and the engine does all the other steps.
-
-The bucket contains only the CLI session of the mirror. The engine keeps no other data
-there, because of these two facts:
-
-- The CLI does not upload a file if Proton has its content.
-- `-f create-new-revision` makes a new revision of a file that changed.
-
-Thus, the version history of Proton is the history of the mirror.
-
-```mermaid
-flowchart LR
-  clock --> session --> destination --> stage --> upload --> confirm --> prune --> report --> ping
-  report --> re["report-engine"] --> rm["report-mirror"]
-  classDef hook stroke-dasharray: 5 5
-  class stage,prune,re,rm hook
-```
-
-| Verb | Function |
-|---|---|
-| `pipeline`, `plan-pipeline` | The verbs in the diagram, in sequence. The read-only half runs to `stage`, and then prints the number of files and MB that the engine can upload |
-| `session` | Downloads `.state/session.tar.age` from the bucket, decrypts it with `MIRROR_AGE_IDENTITY`, and puts the two session files from the tar into `.run/session` |
-| `destination` | Makes a listing of the parent of `MIRROR_PROTON_DESTINATION`. It stops the run unless the parent has one folder of that name, and only one, with the UID `MIRROR_PROTON_DESTINATION_UID` |
-| `stage` | A hook that each mirror writes. It fills `staging/` with the files that Proton must contain |
-| `upload` | Runs one `filesystem upload -f create-new-revision -d merge -t --json` of `staging/*` into the destination. It writes the summary to `.run/upload.json` |
-| `confirm` | In the summary, `transferredItems` and `skippedItems` together must be equal to the files and folders in staging, and `failedItems` must be 0. It writes the result to `.run/confirm.txt` |
-| `prune` | A hook, empty here. A mirror that moves to the trash the items that its upstream deleted writes it, with `list-folder` and `trash` |
-| `pd` | Runs each CLI call, and writes the stderr of the call to `.run/pd.err`. After each call, with all exit codes, it examines the session. If the token changed, it seals the session back into the bucket |
-| `list-folder`, `trash` | `list-folder` writes the JSON listing of a folder to `OUT`. `trash` moves the nodes at `PATHS` to the trash of Proton |
-| `session-seal -- <dir>` | On the host: it encrypts the two files of a laptop login into the bucket |
-| `empty-trash` | On the host: it deletes all the items in the trash of Proton, permanently, but only after you tell it to continue |
-| `report-engine` | A hook: the rows of the engine in the run summary |
-
-The verbs in the table also run these verbs: `session-push`, `seal`, `age`, `pull`, `push`
-and `empty-trash-pipeline`. `pull` and `push` move a key between the bucket and `.run`,
-with no compression. A verb of a mirror can also run them.
-
-The stderr of `list-folder` goes to the log of the run, not to `.run/pd.err`. Its command
-has `|| echo "[]" > OUT` at its end. Thus, the stderr redirect of `pd` goes to the `echo`,
-not to the CLI.
-
-The engine reads no root var. It reads only the environment, with the names that the
-`op.env` of each Proton mirror has:
-
-| Name | Value |
-|---|---|
-| `MIRROR_PROTON_DESTINATION` | The CLI path of the destination folder, for example `/my-files/GitHub` |
-| `MIRROR_PROTON_DESTINATION_UID` | The UID of that folder. Each run compares it before it writes the first file |
-| `MIRROR_R2_BUCKET` | The bucket that contains the session |
-| `MIRROR_AGE_IDENTITY` | The `AGE-SECRET-KEY-...` line that encrypts and decrypts the session |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3` | The credentials and the endpoint for `s3`. The proton mirrors use the `_S3` name for the endpoint. The AWS CLI and boto3 read the two names, `AWS_ENDPOINT_URL` and `AWS_ENDPOINT_URL_S3` |
-
-#### The session
-
-Only a sign-in in a browser can start a session of the CLI. Proton does not accept a new
-sign-in from a datacenter address. Thus, you make the session one time on a laptop, and
-each run gets it from the bucket, encrypted. The CLI changes the refresh token when it uses
-the session. Thus, after each CLI call, `pd` examines the session. If the token changed,
-`pd` seals the session back into the bucket.
-
-```mermaid
-flowchart LR
-  subgraph laptop["Once, on a laptop"]
-    l1["proton-drive auth login<br/>with the session as plain files under .run/pd"] --> l2["task session-seal -- .run/pd<br/>tar, age-encrypt, push"]
-  end
-  l2 --> key[".state/session.tar.age<br/>in the bucket"]
-  subgraph run["Every run"]
-    r1["session: pull, decrypt, extract to .run/session"] --> r2["pd: one CLI call"] --> r3{"token rotated?"}
-    r3 -- yes --> r4["session-push: seal it back"]
-    r3 -- no --> r2
-  end
-  key --> r1
-  r4 --> key
-```
-
-To make a session, do these steps on a laptop:
-
-1. On the Settings page of your Proton account, set telemetry to OFF. Do this for each
-   Proton account.
-2. Run these commands:
-
-   ```sh
-   export PROTON_DRIVE_CACHE_DIR=.run/pd PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
-   proton-drive auth login                                   # a browser opens; .run/pd holds two JSON files after
-   proton-drive filesystem create-folder /my-files <Name>    # /my-files is the drive's own root, not a folder you make
-   proton-drive filesystem list -j /my-files                 # the entry named <Name>: its uid is the destination UID
-   task session-seal -- .run/pd                              # once the bucket and the vault exist
-   ```
-
-Install the CLI at the version that `toolchain.lock.toml` pins. The format of the session
-file changes with the version, and the Linux binary in the image must read the files that
-the laptop wrote. Put `.run/pd` in the repository, because the container gets only the
-repository. git ignores `.run/`, and `task clean` deletes it.
-
-Obey these three rules:
-
-- Do not let two mirrors use one session. The CLI changes the refresh token at each call.
-  Then Proton rejects the token that the other mirror has, and a new login is necessary.
-- Do not run `task sync`, `task plan` or `task empty-trash` from a laptop while an Actions
-  run can be in progress. The three commands use the one session. If the laptop and the run
-  use it at the same time, a new login can be necessary.
-- Do not keep a history of the session in the bucket. A previous copy contains a token that
-  the CLI changed, and the CLI cannot use that copy.
-
 ### A pipeline of a mirror
 
 A mirror that uses a program for its work writes `pipeline` and `plan-pipeline` in its
 Taskfile. Their steps are the `clock`, `report` and `ping` of the toolbox, and the steps of
 the program. The mirror puts these two verbs in `excludes:` in the engine entry of
-`includes:`. dropbox has this structure:
-
-- It includes the proton engine, which supplies `session`, `session-seal`, `empty-trash`,
-  `pull` and `push`.
-- Each step is one `python -m migrator <command>`.
-- The Taskfile sets the sequence of the steps.
-- The Python makes each decision, but the `due` of the toolbox finds if a run does a
-  reconcile.
-- The `proton` image supplies the interpreter, boto3 and the CLI.
-
-A mirror of this structure fills `report-mirror` with its report. It changes no other part
-of the toolbox.
+`includes:`. A mirror of this structure fills `report-mirror` with its report. It changes
+no other part of the toolbox.
 
 ## Secrets
 
@@ -857,20 +727,20 @@ with its name. A repository contains only `op://` references.
 
 ```mermaid
 flowchart LR
-  item["A vault item, one per mirror<br/>sections per service: r2, healthcheck, proton, age, ..."] --> ref["op.env<br/>NAME=op://vault-uuid/item/section/field"]
+  item["A vault item, one per mirror<br/>sections per service: r2, healthcheck"] --> ref["op.env<br/>NAME=op://vault-uuid/item/section/field"]
   ref --> oprun["op run --env-file=op.env, on the host<br/>values exported into its child's environment only"]
   sa["A service account that reads the vault<br/>its token: the secret OP_SERVICE_ACCOUNT_TOKEN"] --> oprun
   oprun --> run["run: -e NAME for every name in op.env and PASS<br/>values never on a command line, never in a log"]
-  run --> tool["the tool inside the image reads its environment<br/>aws, boto3, curl, git"]
+  run --> tool["the tool inside the image reads its environment<br/>aws, curl"]
 ```
 
 ### The vault
 
 There is one vault, with one item for each mirror. Each item has the name of its
-repository. An item has one section for each system that the mirror uses (`r2`,
-`healthcheck`, `proton`, `age`, `github`, `dropbox`). The README of the mirror gives the
-names of the fields. The name and the UUID of the vault are not secrets: without the token
-of the service account, they give access to no item.
+repository. An item has one section for each system that the mirror uses (`r2` and
+`healthcheck`). The README of the mirror gives the names of the fields. The name and the
+UUID of the vault are not secrets: without the token of the service account, they give
+access to no item.
 
 The references give the UUID of the vault: `op://<uuid>/<item>/<section>/<field>`. Thus, if
 the vault gets a new name, the runs continue to operate. Also, a reference cannot contain a
@@ -911,15 +781,10 @@ the variable, and it also puts the file into the container at that same path.
 
 | Name | The tool that reads it | Its source |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The AWS CLI and boto3 | The `r2` section |
-| `AWS_ENDPOINT_URL` | The AWS CLI, in the `rsync` image | The `endpoint` field of the `r2` section |
-| `AWS_ENDPOINT_URL_S3` | boto3, in the `proton` image. The AWS CLI also reads it | The same field. The proton mirrors use this name |
-| `AWS_REGION` | The two tools | The value `auto`, in the image. R2 has one region. If `op run` removes the value `auto` from the output, the output is incorrect |
-| `MIRROR_R2_BUCKET` | `s3`, in the proton engine | The `bucket` field of the `r2` section |
-| `MIRROR_AGE_IDENTITY` | `age`, in the proton engine | The `age` section |
-| `MIRROR_PROTON_DESTINATION`, `_UID` | `destination`, in the proton engine | The `proton` section |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The AWS CLI | The `r2` section |
+| `AWS_ENDPOINT_URL` | The AWS CLI | The `endpoint` field of the `r2` section |
+| `AWS_REGION` | The AWS CLI | The value `auto`, in the image. R2 has one region. If `op run` removes the value `auto` from the output, the output is incorrect |
 | `HEALTHCHECK_URL` | `ping`, `ping-fail` | The `healthcheck` section. It is optional |
-| `MIRROR_*` names that one mirror uses | That mirror | A section for that mirror: `github`, `dropbox` |
 
 ### Without a vault
 
@@ -935,39 +800,35 @@ operates, but it puts the values in a second location.
 
 ## Storage
 
-Each mirror has one S3-compatible bucket. The contents of the bucket are different for each
-engine.
+Each mirror has one S3-compatible bucket. The bucket contains these keys:
 
-| Engine | Key | Contents |
-|---|---|---|
-| rsync | Each path of upstream, at the root | The mirror. A public domain serves the bucket |
-| rsync | `.state/applied.txt.xz` | The state: the keys that the bucket contains, with the length and the mtime of upstream |
-| rsync, with `INDEX` | `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | The stamp and the page state that the directory pages showed last, and the pages with their two keys. With `INDEX_FILES`, `<dir>/<INDEX>` can be a copy of an index file |
-| rsync, a key of the mirror | `index.html` | The landing page of tlnet. `reconcile` does not delete it, because it is in `OWN` |
-| proton | `.state/session.tar.age` | The CLI session, encrypted. This is the only key |
-| A mirror with its pipeline | `.state/state.sqlite.xz.age`, `.state/history/<epoch>-<label>...` | The state of dropbox and its copies with a date. A lifecycle rule of the bucket deletes the history after a time |
-| Each mirror that does a reconcile | `.state/reconciled` | The start epoch of the run that completed the last reconcile. The `push` of the engine writes it. With rsync, it has xz compression but no `.xz` suffix. With dropbox, it is plain text |
+| Key | Contents |
+|---|---|
+| Each path of upstream, at the root | The mirror. A public domain serves the bucket |
+| `.state/applied.txt.xz` | The state: the keys that the bucket contains, with the length and the mtime of upstream |
+| `.state/indexed.txt.xz`, `<dir>/<INDEX>`, `<dir>` | With `INDEX`: the stamp and the page state that the directory pages showed last, and the pages with their two keys. With `INDEX_FILES`, `<dir>/<INDEX>` can be a copy of an index file |
+| `index.html` | A key of the mirror, not of upstream: the landing page of tlnet. `reconcile` does not delete it, because it is in `OWN` |
+| `.state/reconciled` | The start epoch of the run that completed the last reconcile. The `push` of the engine writes it. It has xz compression but no `.xz` suffix |
 
-The engines keep only one prefix for their data: `.state/`. No upstream of the organization
+The engine keeps only one prefix for its data: `.state/`. No upstream of the organization
 has a `.state` entry at its root. The root of gnu has other dot-files, `.header.shtml` and
 `.message`. The engine copies them the same as all other files.
 
 ### The parts of a bucket
 
-- **A bucket.** Its name is in the `BUCKET` root var of the mirror (rsync), or in the
-  `r2/bucket` field of the vault (proton).
+- **A bucket.** Its name is in the `BUCKET` root var of the mirror.
 - **An API token with Object Read & Write, with the scope of that bucket only.** Thus, if an
   unwanted person gets the token, the token gives access to only one bucket. Its ID and its
   secret are in the `r2` section.
 - **The endpoint.** On R2, it is `https://<account-id>.r2.cloudflarestorage.com`, in the
-  `endpoint` field of the `r2` section. All S3 endpoints operate: the engines use no
+  `endpoint` field of the `r2` section. All S3 endpoints operate: the engine uses no
   function that only R2 has.
-- **A custom domain on the bucket**, for a public mirror. This domain is `HOST`. Its zone
-  has Cloudflare rules, each with the scope of the hostname of the mirror. You set these
-  rules one time, not in the pipeline, and the pipeline does not change them. The pipeline
-  makes no call to the Cloudflare API. The README of each public mirror gives its rules.
+- **A custom domain on the bucket.** This domain is `HOST`. Its zone has Cloudflare rules,
+  each with the scope of the hostname of the mirror. You set these rules one time, not in
+  the pipeline, and the pipeline does not change them. The pipeline makes no call to the
+  Cloudflare API. The README of each mirror gives its rules.
 
-Each public mirror has a Configuration Rule. It sets these four items of the zone to Off:
+Each mirror has a Configuration Rule. It sets these four items of the zone to Off:
 
 - Email Obfuscation
 - Rocket Loader
@@ -989,18 +850,15 @@ buckets of katoptra are in one account, and the largest mirrors use all of the f
 Thus, each README gives gross costs: storage only, at $0.015 for each GB-month, with no free
 tier subtracted.
 
-The engines use these facts about R2:
+The engine uses these facts about R2:
 
-- `AWS_REGION=auto` is an `ENV` line in the two images.
-- R2 rejects the default checksum headers of the SDK. Thus, the `proton` image sets
-  `AWS_REQUEST_CHECKSUM_CALCULATION` and `AWS_RESPONSE_CHECKSUM_VALIDATION` to
-  `when_required`.
+- `AWS_REGION=auto` is an `ENV` line in the image.
 - R2 does not give keys in the sequence of byte values. Thus, the engine sorts each
   listing of the bucket again before `join` or `comm`.
-- The limit for an upload in one part is 4.995 GiB. The `rsync` image sets
-  `AWS_CONFIG_FILE` to its `/etc/aws.config`. In that file, `multipart_threshold` and
-  `multipart_chunksize` make the CLI send a file larger than 4 GiB in parts of 512 MiB. The
-  cost of a multipart upload is one Class A operation for each part.
+- The limit for an upload in one part is 4.995 GiB. The image sets `AWS_CONFIG_FILE` to
+  its `/etc/aws.config`. In that file, `multipart_threshold` and `multipart_chunksize` make
+  the CLI send a file larger than 4 GiB in parts of 512 MiB. The cost of a multipart upload
+  is one Class A operation for each part.
 - `DeleteObjects` accepts 1,000 keys in each call, and it has no cost. The CLI exits 0 when
   `DeleteObjects` gives errors. Thus, `remove` examines the response: if it has an `Errors`
   array, `remove` stops the run.
@@ -1048,44 +906,31 @@ On a public repository, the logs of a run are public. A pipeline writes counts a
 lines in the log. It does not write a credential or an account identifier there. The output
 of `op run` does not show the values that it got.
 
-The data of a proton mirror is private. Thus, the proton engine also does not write the path
-of an item in the log:
+The data of a mirror is public. The engine writes the paths of public files in the log, for
+example in `smoke` and `fresh`.
 
-- The stderr of git and of the CLI goes to files in `.run/`. But the stderr of
-  `list-folder` goes to the log.
-- A failure gives the position of an item in the listing, not its name.
+## The image
 
-The `list-folder` and `trash` verbs of the proton engine are different. The log shows the
-command of each verb, with the folder that `list-folder` reads and each path that `trash`
-moves to the trash.
-
-The data of an rsync mirror is public. The rsync engine writes the paths of public files in
-the log, for example in `smoke` and `fresh`.
-
-## The images
-
-There is one image for each engine. lib builds the images, and each run downloads its image
-from GHCR. A run does not build an image, and it does not use Docker Hub.
+There is one image for each engine. lib builds the image, and each run downloads it from
+GHCR. A run does not build the image, and it does not use Docker Hub.
 
 | Variant | Base | Tools | For |
 |---|---|---|---|
-| `rsync` | ubuntu 24.04 | rsync, gpgv, xz, curl, perl (shasum), go-task, AWS CLI v2 with only s3 and sts | rsync upstreams into a bucket |
-| `proton` | python 3.13 slim | proton-drive, age, git, go-task, boto3, requests, pytest, ruff, and `s3`, a boto3 script that gets and puts objects | Proton Drive sinks, with the proton engine or with the Python of the mirror |
+| `rsync` | ubuntu 24.04 | rsync, gpgv, xz, curl, perl (shasum), python3, go-task, AWS CLI v2 with only s3 and sts | rsync upstreams into a bucket |
 
-The two images have these properties:
+The image has these properties:
 
-- Each image uses the repository at `/work`, as a bind mount.
-- Each image sets `TASK_REMOTE_OFFLINE=1` and `AWS_REGION=auto`.
-- Each image pins its base with a digest.
-- The last stage of each image makes sure that each tool shows the version in
-  `toolchain.lock.toml`.
+- It uses the repository at `/work`, as a bind mount.
+- It sets `TASK_REMOTE_OFFLINE=1` and `AWS_REGION=auto`.
+- It pins its base with a digest.
+- Its last stage makes sure that each tool shows the version in `toolchain.lock.toml`.
 
 ### `toolchain.lock.toml`
 
-`toolchain.lock.toml` is one file for all the images. For each tool, it gives the version
-and, for each architecture, the archive and its checksum. `docker/lock.py` reads this file
-for the Dockerfiles and for the toolbox action. The build examines each tool before it uses
-it.
+`toolchain.lock.toml` is one file for the image and for the toolbox action. For each tool,
+it gives the version and, for each architecture, the archive and its checksum.
+`docker/lock.py` reads this file for the Dockerfile and for the toolbox action. The build
+examines each tool before it uses it.
 
 The AWS CLI has a different check. Upstream publishes no checksum for it, only a detached
 PGP signature. Thus, the fetch stage verifies the signature with `docker/aws-cli.pub`, and
@@ -1096,20 +941,20 @@ reject.
 
 ```mermaid
 flowchart LR
-  lock["toolchain.lock.toml<br/>versions, checksums, one key fingerprint"] --> df["docker/rsync.Dockerfile<br/>docker/proton.Dockerfile"]
+  lock["toolchain.lock.toml<br/>versions, checksums, one key fingerprint"] --> df["docker/rsync.Dockerfile"]
   lock --> act[".github/actions/toolbox<br/>task and op on the runner"]
-  df --> ci["ci.yml, every pull request and push to main<br/>build, tools, check, offline, per variant"]
+  df --> ci["ci.yml, every pull request and push to main<br/>build, tools, check, offline"]
   df --> rel["release.yml, on a tag vX.Y.Z"]
-  rel --> ghcr["ghcr.io/katoptra/toolbox:variant-vX.Y.Z<br/>and :variant-vX, amd64 and arm64"]
+  rel --> ghcr["ghcr.io/katoptra/toolbox:rsync-vX.Y.Z<br/>and :rsync-vX, amd64 and arm64"]
   rel --> tag["the git tag vX, moved"]
   tag --> gr["the GitHub release vX.Y.Z"]
-  tag --> inc["mirrors include toolbox.yml and an engine at v2"]
-  ghcr --> img["engines name IMAGE at -v2"]
+  tag --> inc["mirrors include toolbox.yml and the engine at v2"]
+  ghcr --> img["the engine names IMAGE at rsync-v2"]
 ```
 
 There are two types of pin, with one policy:
 
-- The URLs in `includes:` use the git tag `v2`, and the image uses the tag `<variant>-v2`.
+- The URLs in `includes:` use the git tag `v2`, and the image uses the tag `rsync-v2`.
   The two tags move. When they move, a change to a verb or a tool goes into each mirror at its
   next run.
 - Each mirror pins each `uses:` of a lib workflow to the commit of a release, and
@@ -1227,13 +1072,13 @@ HEALTHCHECK_URL=op://<vault-uuid>/ctan/healthcheck/url
 That is a full mirror. The engine supplies `pipeline`, `plan-pipeline`, `report-engine`
 and the `IMAGE`, `ghcr.io/katoptra/toolbox:rsync-v2`.
 
-Each public mirror also sets these root vars:
+Each katoptra mirror also sets these root vars:
 
 - `LIST_FLOOR`: `list` uses it to find a truncated listing.
 - `CANARY`: `smoke` uses it to find a zone that changes bytes or rejects a Perl client.
 - `FRESH_KEY`: `fresh` uses it to find an upstream that stopped.
 
-The other public mirrors have these structures:
+The other mirrors have these structures:
 
 - A mirror of one signed subtree, for example tlnet, adds `TL`, `TL_KEY`, `CEILING_GB`,
   `OWN` and a `FILTER` to its root vars. It puts `index` in `excludes:` in the engine entry
@@ -1243,34 +1088,6 @@ The other public mirrors have these structures:
   `INDEX` and `UPSTREAM` to its root vars. If its upstream serves index files, it also
   adds `INDEX_FILES`. Its host must be in the host list of the Transform Rule of
   [Directory pages](#directory-pages). The engine does all the other work.
-
-### A proton mirror
-
-```yaml
-version: '3'
-vars:
-  OWNERS: jshvn katoptra
-includes:
-  toolbox:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/toolbox.yml
-    flatten: true
-    excludes: [report-mirror]
-    vars:
-      NAME: github
-      DESC: a daily mirror of every repository under {{.OWNERS}} into Proton Drive
-  proton:
-    taskfile: https://raw.githubusercontent.com/katoptra/lib/v2/engines/proton.yml
-    flatten: true
-    excludes: [stage, prune]
-tasks:
-  stage: {cmds: ['# list the repositories, clone each as a mirror, bundle it under {{.STAGING}}/<owner>/']}
-  prune: {cmds: ['# list-folder each owner in Proton; trash the bundles no repository has']}
-  report-mirror: {cmds: ['# the mirror rows']}
-```
-
-Its `op.env` has the seven names in [The proton engine](#the-proton-engine),
-`HEALTHCHECK_URL`, and the names that only this mirror uses. The engine supplies the
-`IMAGE`, `ghcr.io/katoptra/toolbox:proton-v2`.
 
 ### The other files
 
@@ -1403,7 +1220,7 @@ these rules:
   the program gives it each input with awk `-v`, `ENVIRON` or an argument. A program has
   no template of a var that a caller can give, because task renders a global var without
   the call vars.
-- A change to a verb is a change to `examples/<variant>/render.txt`. The diff of that file
+- A change to a verb is a change to `examples/rsync/render.txt`. The diff of that file
   in the pull request is the review.
 
 ### A new engine
@@ -1439,15 +1256,12 @@ the Dockerfile stops the build if a tool does not show the new version.
 The key that signs the AWS CLI has an end date: 2027-07-01. Before that date, get
 `docker/aws-cli.pub` and the fingerprint again from the AWS CLI User Guide.
 
-The session format of the Proton CLI changes with its version. After you update the Proton
-CLI, do a new login on a laptop. Then run `session-seal` for each Proton mirror.
-
 ### Releasing
 
 Tag a commit `vX.Y.Z`. Push the tag. The release workflow then does these steps:
 
-1. It builds the two images for amd64 and arm64.
-2. It uploads `<variant>-vX.Y.Z` and `<variant>-vX` to GHCR.
+1. It builds the image for amd64 and arm64.
+2. It uploads `rsync-vX.Y.Z` and `rsync-vX` to GHCR.
 3. It moves the `vX` git tag.
 4. It publishes the GitHub release `vX.Y.Z`. Its notes give the pull requests that the
    repository merged after the last release.
@@ -1460,8 +1274,7 @@ version. Then each mirror changes its two `v2` strings manually.
 
 ```sh
 git clone https://github.com/katoptra/lib
-cd lib/examples/rsync  && task image-build && task run -- task tools && task check && task run -- task offline
-cd ../proton           && task image-build && task run -- task tools && task check && task run -- task offline
+cd lib/examples/rsync && task image-build && task run -- task tools && task check && task run -- task offline
 ```
 
 These commands do these steps:
@@ -1473,7 +1286,7 @@ These commands do these steps:
 - `task run -- task offline` runs the verbs of the engine that do not use a bucket, on
   `fixtures/`.
 
-For rsync, `offline` does these checks:
+`offline` does these checks:
 
 - The list diff, `retry` and `due`
 - `prepare` and `verify` on a signed subtree, with a test key that the example pins
@@ -1482,17 +1295,11 @@ For rsync, `offline` does these checks:
 - `label` on a set of names and bytes, and `label-trees` in the two directions
 - `fresh` with three clocks: two that it accepts, and one from 48 hours before the check.
 
-For proton, `offline` runs `confirm` on two upload summaries: one that it accepts and one
-that it rejects. Then it does a dry run of `empty-trash-pipeline` from the command line,
-because `empty-trash` starts that task from the command line in the image. Last, it
-encrypts and decrypts one file with `age`.
-
-CI runs the same four steps for each variant on each pull request and on each push to
-`main`. It also runs the test
-cases of the three guards: `.github/validate-vars.sh`, `.github/chain-file.sh` and
+CI runs the same four steps on each pull request and on each push to `main`. It also runs
+the test cases of the three guards: `.github/validate-vars.sh`, `.github/chain-file.sh` and
 `docker/gpg-gate-check.sh`.
 
-When you change a verb, run `task render-update` in each example. The diff in the pull
+When you change a verb, run `task render-update` in `examples/rsync`. The diff in the pull
 request is the review. `CONTRIBUTING.md` gives the three rules that this repository adds to
 the rules of the organization.
 
@@ -1504,17 +1311,17 @@ work that you do one time, manually. No repository does these steps.
 1. **Accounts.** Make these accounts:
    - A GitHub organization, or a personal account. The difference is the location of the
      one secret.
-   - A Cloudflare account with R2, and a zone for the domain of each public mirror.
+   - A Cloudflare account with R2, and a zone for the domain of each mirror.
    - A 1Password account with a service account.
    - A healthchecks.io account.
-2. **The images.** Use `ghcr.io/katoptra/toolbox` with no change: the packages are
-   public. Or, make images in your fork:
+2. **The image.** Use `ghcr.io/katoptra/toolbox` with no change: the package is public.
+   Or, make the image in your fork:
    1. Fork this repository.
-   2. In the two engines, change the `IMAGE` default to the GHCR of your fork.
+   2. In the engine, change the `IMAGE` default to the GHCR of your fork.
    3. In `release.yml`, change `ghcr.io/katoptra/toolbox` to the GHCR of your fork.
-   4. Push a tag `v2.0.0` to your fork. `release.yml` builds the images and uploads them to
+   4. Push a tag `v2.0.0` to your fork. `release.yml` builds the image and uploads it to
       your GHCR, with the token of the repository.
-   5. Make the packages public, one time.
+   5. Make the package public, one time.
    6. In each mirror, change the URLs in `includes:` to your fork.
 3. **The vault.** Make one vault. Record its UUID. Make one service account that can read
    the vault. Put its token in the organization secret `OP_SERVICE_ACCOUNT_TOKEN`.
@@ -1525,7 +1332,7 @@ work that you do one time, manually. No repository does these steps.
    1. Fork one mirror.
    2. Edit its identity vars.
    3. Make its bucket, and a token with the scope of that bucket.
-   4. For a public mirror, make its custom domain and its zone rules.
+   4. Make its custom domain and its zone rules.
    5. Make its vault item, with the sections that its README gives.
    6. Put the UUID of the vault in `op.env`.
    7. Run `task check`.
